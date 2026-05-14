@@ -1,0 +1,25 @@
+name: ACG Enforcement
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  acg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ACG Core
+        run: python3 scripts/acg-enforce.py --config acg.yaml --mode all
+
+      - name: Upload ACG evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acg-evidence
+          path: |
+            acg-evidence.jsonl
+            acg-logs/
