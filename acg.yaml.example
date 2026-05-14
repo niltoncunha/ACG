@@ -1,0 +1,29 @@
+project:
+  name: example-project
+  default_branch: main
+
+task:
+  id: example-task-001
+  description: "Short task description"
+  scope:
+    allowed:
+      - src/**
+      - tests/**
+    forbidden:
+      - .env
+      - .env.*
+      - secrets/**
+      - infra/**
+      - migrations/**
+  done_when:
+    - command: "npm test"
+
+verify:
+  commands:
+    - npm test
+    - npm run typecheck
+    - npm run build
+
+promotion:
+  fail_closed: true
+  require_evidence: true
