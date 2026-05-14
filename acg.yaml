@@ -1,0 +1,43 @@
+project:
+  name: acg-core
+  default_branch: main
+
+task:
+  id: acg-core-self-check
+  description: "Validate the ACG-Core repository package"
+  scope:
+    allowed:
+      - README.md
+      - SPEC.md
+      - QUICKSTART.md
+      - USER_GUIDE.md
+      - PLATFORM_ADAPTERS.md
+      - KNOWN_LIMITATIONS.md
+      - CONTRIBUTING.md
+      - ROADMAP.md
+      - PUBLISHING_GUIDE.md
+      - NOTICE
+      - LICENSE
+      - LICENSE.md
+      - AGENTS.md
+      - acg.yaml
+      - acg.yaml.example
+      - scripts/**
+      - schemas/**
+      - adapters/**
+      - examples/**
+      - .github/**
+    forbidden:
+      - .env
+      - .env.*
+      - secrets/**
+  done_when:
+    - command: "python3 scripts/acg-enforce.py --config acg.yaml --mode branch"
+
+verify:
+  commands:
+    - python3 scripts/acg-enforce.py --config acg.yaml --mode scope
+
+promotion:
+  fail_closed: true
+  require_evidence: true
