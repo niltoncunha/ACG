@@ -6,7 +6,7 @@ ACG-Core is built for teams using tools such as Codex, Claude Code, Cursor, Aide
 
 It is not a prompt framework. It is an enforcement core.
 
-## BOPEX map
+## System control map
 
 ```txt
 +======================================================================+
