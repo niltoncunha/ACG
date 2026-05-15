@@ -45,3 +45,9 @@ python3 scripts/acg-enforce.py --config acg.yaml --mode all
 ## 5. Open PR
 
 GitHub Actions should run ACG and block merge if scope or verification fails.
+
+## 6. Optional: use the Guardrail example
+
+If the problem is not coding scope but bad AI intake, open `examples/acg-guardrail/index.html`.
+
+That example guides the human before the model starts summarizing, comparing or concluding.
