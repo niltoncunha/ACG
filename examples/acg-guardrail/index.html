@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ACG Guardrail</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <p class="eyebrow">ACG Guardrail</p>
+        <h1>Governanca de entrada para AI que nao aceita pedido frouxo.</h1>
+        <p class="lede">O fluxo obriga objetivo, escopo, limites, checkpoints e regra de parada antes da sintese final.</p>
+        <div class="steps" id="stepper"></div>
+        <div class="sample-box">
+          <p class="eyebrow">Modelos</p>
+          <div class="sample-actions">
+            <button data-sample="contract">Contratos</button>
+            <button data-sample="research">Pesquisa</button>
+            <button data-sample="ops">Operacao</button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Fluxo guiado</p>
+            <h2 id="step-title">Objetivo e pergunta real</h2>
+          </div>
+          <div class="topbar-actions">
+            <button id="reset-btn" class="ghost">Resetar</button>
+            <button id="copy-btn" class="solid">Copiar contrato</button>
+          </div>
+        </header>
+
+        <section class="panel">
+          <div class="progress-line"><div id="progress-fill"></div></div>
+          <p id="progress-label" class="muted">Etapa 1 de 5</p>
+
+          <form id="guardrail-form">
+            <section class="step visible" data-step="0">
+              <label>Objetivo final<textarea name="goal" rows="3" placeholder="Ex.: Identificar contradicoes entre contratos sobre multa e responsabilidade."></textarea></label>
+              <label>Pergunta que precisa ser respondida<textarea name="question" rows="3" placeholder="Ex.: Quais divergencias sao fatos, quais sao inferencias e onde falta base?&#10;"></textarea></label>
+              <div class="grid two">
+                <label>Operacao principal<select name="operation"><option value="">Escolha</option><option value="inventario">Inventario</option><option value="comparacao">Comparacao</option><option value="auditoria">Auditoria</option><option value="extracao">Extracao</option><option value="priorizacao">Priorizacao</option><option value="sintese">Sintese final</option></select></label>
+                <label>Stake<select name="stake"><option value="">Escolha</option><option value="baixo">Baixo</option><option value="medio">Medio</option><option value="alto">Alto</option><option value="critico">Critico</option></select></label>
+              </div>
+              <label>O que conta como resposta boa<textarea name="success" rows="3" placeholder="Ex.: resposta enxuta, com trechos de apoio e separacao entre fato, inferencia e hipotese."></textarea></label>
+            </section>
+
+            <section class="step" data-step="1">
+              <label>Materiais que entram<textarea name="materials" rows="3" placeholder="Ex.: contrato-a.pdf, contrato-b.pdf, aditivo.docx"></textarea></label>
+              <div class="grid two">
+                <label>Foco<textarea name="focus" rows="3" placeholder="Ex.: clausulas de multa, prazo e responsabilidade"></textarea></label>
+                <label>O que deve ser ignorado<textarea name="exclude" rows="3" placeholder="Ex.: repeticoes, capa, anexos comerciais"></textarea></label>
+              </div>
+              <fieldset>
+                <legend>Formatos</legend>
+                <div class="chips">
+                  <label><input type="checkbox" name="formats" value="pdf" /> PDF</label>
+                  <label><input type="checkbox" name="formats" value="docx" /> DOCX</label>
+                  <label><input type="checkbox" name="formats" value="planilha" /> Planilha</label>
+                  <label><input type="checkbox" name="formats" value="email" /> E-mail</label>
+                  <label><input type="checkbox" name="formats" value="notas" /> Notas</label>
+                </div>
+              </fieldset>
+            </section>
+
+            <section class="step" data-step="2">
+              <fieldset>
+                <legend>O que a AI pode fazer</legend>
+                <div class="chips">
+                  <label><input type="checkbox" name="allowed" value="inventariar" /> Inventariar</label>
+                  <label><input type="checkbox" name="allowed" value="comparar" /> Comparar</label>
+                  <label><input type="checkbox" name="allowed" value="resumir" /> Resumir</label>
+                  <label><input type="checkbox" name="allowed" value="extrair trechos" /> Extrair trechos</label>
+                  <label><input type="checkbox" name="allowed" value="levantar hipoteses" /> Levantar hipoteses</label>
+                  <label><input type="checkbox" name="allowed" value="priorizar riscos" /> Priorizar riscos</label>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>O que a AI nao pode fazer</legend>
+                <div class="chips">
+                  <label><input type="checkbox" name="forbidden" value="decidir sozinha" /> Decidir sozinha</label>
+                  <label><input type="checkbox" name="forbidden" value="inventar contexto externo" /> Inventar contexto externo</label>
+                  <label><input type="checkbox" name="forbidden" value="tratar inferencia como fato" /> Tratar inferencia como fato</label>
+                  <label><input type="checkbox" name="forbidden" value="ocultar incerteza" /> Ocultar incerteza</label>
+                  <label><input type="checkbox" name="forbidden" value="emitir conclusao final cedo demais" /> Emitir conclusao cedo demais</label>
+                </div>
+              </fieldset>
+              <div class="grid two">
+                <label>Teto de claim<select name="claim"><option value="">Escolha</option><option value="somente fatos e inventario">Somente fatos e inventario</option><option value="fatos e inferencias plausiveis">Fatos e inferencias plausiveis</option><option value="hipoteses permitidas, sem decisao">Hipoteses permitidas, sem decisao</option><option value="sintese final apos checkpoints">Sintese final apos checkpoints</option></select></label>
+                <label>Quando a AI deve declarar duvida<select name="confidence"><option value="">Escolha</option><option value="sempre que faltar citacao direta">Sempre que faltar citacao direta</option><option value="sempre que houver conflito no material">Sempre que houver conflito no material</option><option value="sempre que cruzar fontes heterogeneas">Sempre que cruzar fontes heterogeneas</option><option value="sempre que passar de leitura para decisao">Sempre que passar de leitura para decisao</option></select></label>
+              </div>
+            </section>
+
+            <section class="step" data-step="3">
+              <fieldset>
+                <legend>Checkpoints humanos obrigatorios</legend>
+                <div class="stack">
+                  <label><input type="checkbox" name="checkpoints" value="validar se o inventario esta fiel ao material" /> Validar se o inventario esta fiel ao material</label>
+                  <label><input type="checkbox" name="checkpoints" value="aprovar agrupamentos antes de interpretar" /> Aprovar agrupamentos antes de interpretar</label>
+                  <label><input type="checkbox" name="checkpoints" value="revisar claims sem base suficiente" /> Revisar claims sem base suficiente</label>
+                  <label><input type="checkbox" name="checkpoints" value="autorizar ou negar a sintese final" /> Autorizar ou negar a sintese final</label>
+                </div>
+              </fieldset>
+              <div class="grid two">
+                <label>Quem valida<input name="reviewer" type="text" placeholder="Ex.: analista responsavel" /></label>
+                <label>Quando o fluxo deve parar<textarea name="stopRule" rows="3" placeholder="Ex.: se houver conflito sem citacao suficiente, parar e pedir validacao humana."></textarea></label>
+              </div>
+            </section>
+
+            <section class="step" data-step="4">
+              <div class="grid two">
+                <label>Formato de entrega<select name="outputFormat"><option value="">Escolha</option><option value="blocos auditaveis">Blocos auditaveis</option><option value="matriz comparativa">Matriz comparativa</option><option value="checklist de risco">Checklist de risco</option><option value="sumario executivo">Sumario executivo</option><option value="prompt operacional">Prompt operacional</option></select></label>
+                <label>Tom<select name="tone"><option value="">Escolha</option><option value="tecnico e seco">Tecnico e seco</option><option value="executivo e direto">Executivo e direto</option><option value="analitico com citacoes">Analitico com citacoes</option></select></label>
+              </div>
+              <label>Instrucao final para a AI<textarea name="finalInstruction" rows="4" placeholder="Ex.: gere primeiro um inventario e so suba para sintese final depois de marcar fatos, inferencias, hipoteses e lacunas."></textarea></label>
+              <label>Observacoes do operador<textarea name="notes" rows="3" placeholder="Ex.: nao usar contexto externo e manter verbos de certeza sob controle."></textarea></label>
+            </section>
+          </form>
+
+          <footer class="footer-actions">
+            <button id="back-btn" class="ghost" disabled>Voltar</button>
+            <button id="next-btn" class="solid">Avancar</button>
+          </footer>
+        </section>
+      </main>
+
+      <aside class="inspector">
+        <section class="score-box">
+          <p class="eyebrow">Prontidao</p>
+          <div class="score"><strong id="score-value">8</strong><span>/100</span></div>
+          <p id="score-copy" class="muted">Ainda esta frouxo. O sistema ainda aceitaria improviso.</p>
+        </section>
+        <section>
+          <p class="eyebrow">Alarmes</p>
+          <ul id="warnings-list" class="warnings"></ul>
+        </section>
+        <section>
+          <p class="eyebrow">Contrato gerado</p>
+          <pre id="contract-preview"></pre>
+        </section>
+      </aside>
+    </div>
+    <script src="./script.js"></script>
+  </body>
+</html>
