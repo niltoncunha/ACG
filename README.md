@@ -64,12 +64,25 @@ It is not a prompt framework. It is an enforcement core.
 - `acg.yaml` — governance configuration.
 - `scripts/acg-enforce.py` — enforcement runner.
 - `.github/workflows/acg.yml` — GitHub Actions gate.
+- `examples/acg-guardrail/` — interface guiada para governanca de entrada antes da sintese final.
+
+## Guardrail Example
+
+O exemplo em `examples/acg-guardrail/` transforma a tese do ACG em um fluxo concreto para usuarios comuns.
+
+Ele obriga:
+
+- objetivo e pergunta real
+- escopo e exclusoes
+- limites do que a AI pode e nao pode fazer
+- checkpoints humanos obrigatorios
+- regra de parada e teto de claim
 
 ## Status
 
 Current package: **ACG-Core v0.2**.
 
-Implemented: branch check, scope check, external verification runner, done_when checks, JSONL evidence, promotion gate, GitHub Actions workflow, adapters and MIT license.
+Implemented: branch check, scope check, external verification runner, done_when checks, JSONL evidence, promotion gate, GitHub Actions workflow, adapters, MIT license e um exemplo operacional de governanca de entrada.
 
 ## License
 
