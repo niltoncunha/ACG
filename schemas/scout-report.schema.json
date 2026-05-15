@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acg.local/schemas/scout-report.schema.json",
+  "title": "Structure Scout Report",
+  "type": "object",
+  "required": [
+    "generated_at",
+    "input_summary",
+    "inventory",
+    "system_profile",
+    "language_map",
+    "control_files",
+    "reference_graph",
+    "attention_queue",
+    "phased_reading_plan",
+    "execution_brief",
+    "readiness_score",
+    "readiness_explanation",
+    "guardrail_mode",
+    "questions",
+    "alarms"
+  ],
+  "properties": {
+    "generated_at": {
+      "type": "string"
+    },
+    "input_summary": {
+      "type": "object"
+    },
+    "inventory": {
+      "type": "object"
+    },
+    "system_profile": {
+      "type": "object"
+    },
+    "language_map": {
+      "type": "array"
+    },
+    "control_files": {
+      "type": "array"
+    },
+    "reference_graph": {
+      "type": "object",
+      "required": [
+        "node_count",
+        "edge_count",
+        "edges",
+        "hubs",
+        "broken_refs",
+        "orphans"
+      ]
+    },
+    "attention_queue": {
+      "type": "array"
+    },
+    "phased_reading_plan": {
+      "type": "array"
+    },
+    "execution_brief": {
+      "type": "object",
+      "required": [
+        "objective",
+        "context_hint",
+        "cluster_focus",
+        "opening_order",
+        "defer_for_now",
+        "anti_drift_rules",
+        "go_signal",
+        "handoff_prompt"
+      ]
+    },
+    "readiness_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "readiness_explanation": {
+      "type": "string"
+    },
+    "guardrail_mode": {
+      "type": "string",
+      "enum": [
+        "guided",
+        "silent"
+      ]
+    },
+    "questions": {
+      "type": "array"
+    },
+    "alarms": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}
