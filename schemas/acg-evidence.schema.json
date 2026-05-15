@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acg.local/schemas/acg-evidence.schema.json",
+  "title": "ACG Evidence Event",
+  "type": "object",
+  "required": [
+    "task_id",
+    "timestamp",
+    "step",
+    "status",
+    "branch",
+    "commit"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "step": {
+      "type": "string",
+      "enum": [
+        "branch",
+        "scope",
+        "verify",
+        "verify_summary",
+        "done_when",
+        "done_when_summary",
+        "gate"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "branch": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "commit": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}
