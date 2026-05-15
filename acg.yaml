@@ -20,22 +20,28 @@ task:
       - LICENSE
       - LICENSE.md
       - AGENTS.md
+      - AUDIT.md
+      - CHANGELOG.md
+      - RELEASE_NOTES.md
       - acg.yaml
       - acg.yaml.example
       - scripts/**
       - schemas/**
       - adapters/**
       - examples/**
+      - tests/**
       - .github/**
     forbidden:
       - .env
       - .env.*
       - secrets/**
   done_when:
-    - command: "python3 scripts/acg-enforce.py --config acg.yaml --mode branch"
+    - command: "python3 -m unittest discover -s tests -p 'test_*.py'"
+    - file_exists: "README.md"
 
 verify:
   commands:
+    - python3 scripts/acg-enforce.py --config acg.yaml --mode branch
     - python3 scripts/acg-enforce.py --config acg.yaml --mode scope
 
 promotion:
