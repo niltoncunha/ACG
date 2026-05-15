@@ -1,0 +1,11 @@
+# ACG-Core Cursor Rule
+
+Follow ACG-Core.
+
+- Read `acg.yaml` before editing.
+- Edit only paths in `task.scope.allowed`.
+- Do not edit paths in `task.scope.forbidden`.
+- Do not claim verification success.
+- Keep changes scoped and reviewable.
+
+CI is the enforcement layer. Cursor is the editing assistant.
