@@ -1,36 +1,40 @@
 # Known Limitations
 
-ACG-Core is intentionally limited. It is a minimum enforcement layer, not a complete safety system.
+ACG is intentionally limited.
 
-## ACG-Core does not protect against
+It is a structural guidance and enforcement layer, not a complete software safety system.
 
-- Semantic drift in code paths not covered by tests.
-- Weak test suites.
-- Flaky tests and false confidence from unstable verification.
-- Unsafe database migrations.
-- Bad product decisions.
-- Bad architecture decisions.
-- Performance regressions not covered by verification.
-- Security bugs not covered by verification.
-- External side effects caused by code execution.
-- Code written within scope that later executes effects outside scope.
-- Network calls or system mutations performed by executed code.
-- Semantic conflicts from parallel agent branches with non-overlapping scopes.
-- Human reviewers approving without real context.
-- Teams disabling or bypassing CI gates under deadline pressure.
+## ACG does not protect against
 
-## ACG-Core does protect against
+- semantic drift in code paths not covered by tests;
+- weak or flaky test suites;
+- unsafe database migrations;
+- bad product decisions;
+- bad architecture decisions;
+- performance regressions not covered by verification;
+- security bugs not covered by verification;
+- external side effects caused by executed code;
+- code written within scope that later performs effects outside scope;
+- network calls or mutations performed by executed code;
+- semantic conflicts from parallel agent branches;
+- humans bypassing CI or branch protection;
+- humans approving changes without understanding the material.
 
-- Direct edits outside declared allowed paths.
-- Direct edits to declared forbidden paths.
-- Running agentic work directly on the default branch.
-- Promoting changes without running configured external verification.
-- Treating an agent's self-report as proof.
-- Missing minimum evidence for verification.
+## ACG does protect against
+
+- reading too much structure too early without prioritization;
+- direct edits outside declared allowed paths;
+- direct edits to forbidden paths;
+- agentic work directly on the default branch;
+- promotion without configured verification;
+- treating agent self-report as proof;
+- missing minimum audit evidence.
 
 ## Practical interpretation
 
-ACG-Core improves containment. It does not make agents safe by itself.
+ACG improves structure, containment, guidance, scope and auditability.
+
+It does not make AI systems automatically correct or safe.
 
 The right question is not:
 
@@ -38,8 +42,12 @@ The right question is not:
 Did the AI do it right?
 ```
 
-The right question is:
+The better question is:
 
 ```txt
-Was the change scoped, externally verified, evidenced, and blocked on failure?
+Was the work structurally guided,
+properly scoped,
+externally verified,
+evidenced,
+and blocked on failure?
 ```
