@@ -1,0 +1,7 @@
+# Aider adapter example for ACG-Core
+
+# Keep Aider scoped manually by adding only allowed files to context.
+# Let CI enforce ACG before merge.
+
+test-cmd: python3 scripts/acg-enforce.py --config acg.yaml --mode all
+auto-commits: false
