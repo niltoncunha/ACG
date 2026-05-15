@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ACG Core Config",
+  "type": "object",
+  "required": ["project", "task", "verify", "promotion"],
+  "properties": {
+    "project": {
+      "type": "object",
+      "required": ["name", "default_branch"]
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "scope"],
+      "properties": {
+        "scope": {
+          "type": "object",
+          "required": ["allowed", "forbidden"]
+        }
+      }
+    },
+    "verify": {
+      "type": "object",
+      "required": ["commands"]
+    },
+    "promotion": {
+      "type": "object",
+      "required": ["fail_closed", "require_evidence"]
+    }
+  }
+}
