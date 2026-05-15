@@ -30,6 +30,19 @@ CI will verify externally.
 - Is the diff small enough to understand?
 - Are the limitations relevant to this PR?
 
+## Intake before execution
+
+If the real problem is that the human is feeding the model badly, use `examples/acg-guardrail/` before running the agent.
+
+That example forces:
+
+- objetivo claro
+- escopo material
+- limite do que a AI pode fazer
+- checkpoints humanos
+- regra de parada
+- contrato operacional copiavel
+
 ## When not to rely on ACG-Core alone
 
 Use additional review for:
