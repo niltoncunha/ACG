@@ -22,8 +22,15 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -p 'test_*.py'
 
-      - name: Run ACG enforcement
+      - name: Run ACG enforcement for pull requests
+        if: github.event_name == 'pull_request'
         run: python scripts/acg-enforce.py --config acg.yaml --mode all
+
+      - name: Run ACG self validation for manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          python scripts/acg-enforce.py --config acg.yaml --mode done
+          python scripts/acg-enforce.py --config acg.yaml --mode gate
 
       - name: Upload evidence
         if: always()
