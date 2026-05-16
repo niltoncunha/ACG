@@ -3,14 +3,18 @@
 
 Build a structural map of a large folder before giving it to an AI agent.
 
-Outputs:
-- .acg/context_manifest.jsonl
-- .acg/structure_map.md
-- .acg/hotpaths.json
-- .acg/reading_queues.json
-- .acg/search_targets.md
-- .acg/execution_brief.md
-- .acg/phase1_pack/
+Output layout:
+
+.acg/
+  ACG_MASTER.md
+  phase1_pack/
+  artifacts/
+    context_manifest.jsonl
+    structure_map.md
+    hotpaths.json
+    reading_queues.json
+    search_targets.md
+    execution_brief.md
 
 No external dependencies.
 """
@@ -31,6 +35,15 @@ EXCLUDE_DIRS = {
 }
 
 BINARY_OR_DATABASE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".pkl", ".pickle"}
+
+LEGACY_ROOT_ARTIFACTS = {
+    "context_manifest.jsonl",
+    "structure_map.md",
+    "hotpaths.json",
+    "reading_queues.json",
+    "search_targets.md",
+    "execution_brief.md",
+}
 
 CRITICAL_NAME_WEIGHTS = {
     "agents.md": 42,
@@ -347,11 +360,12 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
         "",
         "## Companion Artifacts",
         "",
+        "- Master file: `../ACG_MASTER.md`",
         "- Full manifest: `context_manifest.jsonl`",
         "- Machine-readable queues: `reading_queues.json`",
         "- Full search-only list: `search_targets.md`",
         "- AI handoff: `execution_brief.md`",
-        "- Controlled initial files: `phase1_pack/`",
+        "- Controlled initial files: `../phase1_pack/`",
         "",
         "## Cluster Overview",
         "",
@@ -365,16 +379,16 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
         lines.append(f"| {entry.hotpath_score} | {entry.risk_score} | {entry.strategy} | {entry.folder_family} | `{entry.relative_path}` |")
     lines += ["", "## Phase 1 Reading Queue", ""]
     for item in queues.get("phase1", []):
-        lines.append(f"- `{item['relative_path']}` — score {item['hotpath_score']}, {item['role']}")
+        lines.append(f"- `{item['relative_path']}` - score {item['hotpath_score']}, {item['role']}")
     lines += ["", "## Search-Only / Terminal Assets", "", "Summary only. See `search_targets.md` for the full list.", ""]
     for item in search_targets[:25]:
-        lines.append(f"- `{item['relative_path']}` — {item['strategy']}, {item['size']} bytes")
+        lines.append(f"- `{item['relative_path']}` - {item['strategy']}, {item['size']} bytes")
     if len(search_targets) > 25:
         lines.append(f"- ... {len(search_targets) - 25} more. Full list: `search_targets.md`; machine-readable queue: `reading_queues.json`.")
     lines += ["", "## Human-Only Files", ""]
     if human_only:
         for item in human_only[:25]:
-            lines.append(f"- `{item['relative_path']}` — {item['folder_family']}")
+            lines.append(f"- `{item['relative_path']}` - {item['folder_family']}")
         if len(human_only) > 25:
             lines.append(f"- ... {len(human_only) - 25} more. Full list: `reading_queues.json` under `human_only`.")
     else:
@@ -398,7 +412,7 @@ def copy_phase1(out_dir: Path, queues: dict[str, object]) -> None:
 def write_search_targets(path: Path, queues: dict[str, object]) -> None:
     lines = ["# ACG Search Targets", "", "These files should not be opened fully. Use targeted search only.", ""]
     for item in queues.get("search_targets", []):
-        lines.append(f"- `{item['relative_path']}` — {item['strategy']}, {item['size']} bytes, risk {item['risk_score']}")
+        lines.append(f"- `{item['relative_path']}` - {item['strategy']}, {item['size']} bytes, risk {item['risk_score']}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -411,16 +425,18 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
         "",
         "You are operating under ACG Structure Scout.",
         "",
+        "Read `../ACG_MASTER.md` first. It is the only root-level instruction file.",
         "Do not read the entire source folder. Read only the Phase 1 pack first.",
         "Do not edit files. This is orientation only.",
         "Do not claim final understanding. Return uncertainties explicitly.",
         "",
         "## Required artifacts to inspect first",
         "",
+        "- `../ACG_MASTER.md`",
         "- `structure_map.md`",
         "- `reading_queues.json`",
         "- `search_targets.md`",
-        "- `phase1_pack/`",
+        "- `../phase1_pack/`",
         "",
         "## You may read now",
     ]
@@ -444,6 +460,92 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dict[str, object]) -> None:
+    phase1 = queues.get("phase1", [])
+    phase2 = queues.get("phase2", [])
+    search_targets = queues.get("search_targets", [])
+    human_only = queues.get("human_only", [])
+    ignored = queues.get("ignored", [])
+    lines = [
+        "# ACG Master Context File",
+        "",
+        "This is the root instruction file for the generated ACG context package.",
+        "",
+        "Start here. Do not treat files in `artifacts/` as separate entrypoints unless this file points to them.",
+        "",
+        "## Generated Layout",
+        "",
+        "```txt",
+        ".acg/",
+        "  ACG_MASTER.md",
+        "  phase1_pack/",
+        "  artifacts/",
+        "    context_manifest.jsonl",
+        "    structure_map.md",
+        "    hotpaths.json",
+        "    reading_queues.json",
+        "    search_targets.md",
+        "    execution_brief.md",
+        "```",
+        "",
+        "## Source",
+        "",
+        f"`{source}`",
+        "",
+        "## Inventory Summary",
+        "",
+        f"- Total indexed files: {len(entries)}",
+        f"- Phase 1 files: {len(phase1)}",
+        f"- Phase 2 candidates: {len(phase2)}",
+        f"- Search-only / terminal assets: {len(search_targets)}",
+        f"- Human-only files: {len(human_only)}",
+        f"- Ignored files: {len(ignored)}",
+        "",
+        "## Read Order for AI",
+        "",
+        "1. Read this file: `ACG_MASTER.md`.",
+        "2. Read `artifacts/structure_map.md` for the structural overview.",
+        "3. Read `artifacts/reading_queues.json` for the complete operational queues.",
+        "4. Read `artifacts/search_targets.md` to understand what must not be opened directly.",
+        "5. Read only files copied inside `phase1_pack/`.",
+        "6. Stop and return the required confirmation before asking for Phase 2.",
+        "",
+        "## Do Not Do",
+        "",
+        "- Do not read the original source folder blindly.",
+        "- Do not open terminal assets directly.",
+        "- Do not treat `... N more` summaries as complete lists.",
+        "- Do not edit files during orientation.",
+        "- Do not claim final understanding from Phase 1 alone.",
+        "",
+        "## Required AI Confirmation",
+        "",
+        "```txt",
+        "ACG-UNDERSTOOD: structure-scout",
+        "SCOPE: files you actually read",
+        "RISKS: key risks before deeper processing",
+        "QUESTIONS: what needs human approval",
+        "```",
+        "",
+        "## Human Next Step",
+        "",
+        "After the AI returns the confirmation, decide whether to approve Phase 2 based on:",
+        "",
+        "- whether it respected the read order;",
+        "- whether it avoided terminal/search-only assets;",
+        "- whether its questions are objective;",
+        "- whether it proposed a bounded next reading queue.",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def cleanup_legacy_root_artifacts(out: Path) -> None:
+    for name in LEGACY_ROOT_ARTIFACTS:
+        target = out / name
+        if target.is_file():
+            target.unlink()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="ACG Structure Scout v0.3")
     parser.add_argument("--source", required=True, help="Folder to scan")
@@ -456,27 +558,33 @@ def main() -> int:
 
     source = Path(args.source).resolve()
     out = Path(args.out).resolve()
+    artifacts = out / "artifacts"
     if not source.is_dir():
         raise SystemExit(f"Source folder not found: {source}")
     out.mkdir(parents=True, exist_ok=True)
+    artifacts.mkdir(parents=True, exist_ok=True)
+    cleanup_legacy_root_artifacts(out)
 
     entries = scan(source, args.limit)
     queues = build_queues(entries, args.phase1_max_files, args.phase1_max_bytes, args.phase2_max_files)
 
-    write_jsonl(out / "context_manifest.jsonl", entries)
-    write_json(out / "hotpaths.json", [asdict(e) for e in sort_hot(entries)[:100]])
-    write_json(out / "reading_queues.json", queues)
-    write_structure_map(out / "structure_map.md", source, entries, queues)
-    write_search_targets(out / "search_targets.md", queues)
-    write_execution_brief(out / "execution_brief.md", queues)
+    write_jsonl(artifacts / "context_manifest.jsonl", entries)
+    write_json(artifacts / "hotpaths.json", [asdict(e) for e in sort_hot(entries)[:100]])
+    write_json(artifacts / "reading_queues.json", queues)
+    write_structure_map(artifacts / "structure_map.md", source, entries, queues)
+    write_search_targets(artifacts / "search_targets.md", queues)
+    write_execution_brief(artifacts / "execution_brief.md", queues)
     copy_phase1(out, queues)
+    write_master(out / "ACG_MASTER.md", source, entries, queues)
 
     print(f"ACG Structure Scout indexed files: {len(entries)}")
     print(f"ACG output folder: {out}")
-    print(f"Structure map: {out / 'structure_map.md'}")
-    print(f"Reading queues: {out / 'reading_queues.json'}")
+    print(f"Master file: {out / 'ACG_MASTER.md'}")
+    print(f"Artifacts folder: {artifacts}")
+    print(f"Structure map: {artifacts / 'structure_map.md'}")
+    print(f"Reading queues: {artifacts / 'reading_queues.json'}")
     print(f"Phase 1 pack: {out / 'phase1_pack'}")
-    print(f"Execution brief: {out / 'execution_brief.md'}")
+    print(f"Execution brief: {artifacts / 'execution_brief.md'}")
     return 0
 
 
