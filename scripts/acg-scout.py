@@ -23,8 +23,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import shutil
+import stat
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -123,6 +125,28 @@ def utc(ts: float) -> str:
 
 def should_skip(path: Path) -> bool:
     return any(part in EXCLUDE_DIRS for part in path.parts)
+
+
+def remove_readonly(func, path: str, exc_info) -> None:
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def safe_rmtree(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path, onerror=remove_readonly)
+    except PermissionError as exc:
+        raise RuntimeError(
+            "ACG could not replace phase1_pack because Windows is holding a file or folder open. "
+            "Close Explorer, editors, Gemini/Codex/Claude sessions, terminals inside .acg/phase1_pack, "
+            "then delete .acg/phase1_pack manually and rerun."
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"ACG could not remove old folder: {path}. Close programs using it, delete it manually, and rerun."
+        ) from exc
 
 
 def classify_family(relative_path: str) -> tuple[str, str, list[str]]:
@@ -400,7 +424,7 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
 def copy_phase1(out_dir: Path, queues: dict[str, object]) -> None:
     pack = out_dir / "phase1_pack"
     if pack.exists():
-        shutil.rmtree(pack)
+        safe_rmtree(pack)
     pack.mkdir(parents=True, exist_ok=True)
     for item in queues.get("phase1", []):
         src = Path(str(item["absolute_path"]))
@@ -589,4 +613,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except RuntimeError as exc:
+        raise SystemExit(f"ACG ERROR: {exc}")
