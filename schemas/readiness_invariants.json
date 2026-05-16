@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/niltoncunha/ACG/schemas/readiness_invariants.json",
+  "title": "ACG readiness_score — Formal Definition and Invariants",
+  "description": "Normative specification for readiness_score invariants. This is the authority for readiness scoring.",
+  "readiness_score_definition": {
+    "type": "number",
+    "domain": "[0.0, 1.0]",
+    "precision": "3 decimal places",
+    "formula": "round(W1 + W2 + W3 + W4, 3)",
+    "components": {
+      "W1": {
+        "weight": 0.30,
+        "source": "system_profile.has_entrypoint",
+        "values": {"true": 0.30, "false": 0.00},
+        "rationale": "A repository without a detectable entrypoint has no clear execution chain."
+      },
+      "W2": {
+        "weight": 0.25,
+        "source": "system_profile.has_control_files",
+        "values": {"true": 0.25, "false": 0.00},
+        "rationale": "Control files define the repository's operating contract."
+      },
+      "W3": {
+        "weight": 0.25,
+        "formula": "0.25 * min(open_now_count / total_files * 4, 1.0)",
+        "saturation_point": "open_now_count >= total_files * 0.25",
+        "rationale": "Repositories with no open_now files are opaque to the agent. Saturates at 25% to avoid inflating trivial repositories."
+      },
+      "W4": {
+        "weight": 0.20,
+        "formula": "0.20 * max(0.0, 1.0 - broken_refs_count / total_files)",
+        "rationale": "Broken references indicate structural inconsistency. Penalty is proportional."
+      }
+    },
+    "halt_condition": {
+      "trigger": "W1 == 0.0 AND W2 == 0.0",
+      "effect": "score is capped at 0.44",
+      "rationale": "A repository with neither entrypoint nor control files should never silently pass.",
+      "formal": "if (not has_entrypoint) and (not has_control): score = min(score, 0.44)"
+    }
+  },
+  "guardrail_thresholds": {
+    "silent": {"condition": "score >= 0.65", "exit_code": 0, "ci_behavior": "proceed"},
+    "warn": {"condition": "score >= 0.45 AND score < 0.65", "exit_code": 1, "ci_behavior": "proceed_with_human_checkpoint"},
+    "halt": {"condition": "score < 0.45", "exit_code": 2, "ci_behavior": "block_promotion"}
+  },
+  "invariants": [
+    {"id": "INV-R1", "description": "readiness_score is always in [0.0, 1.0].", "formal": "0.0 <= readiness_score <= 1.0"},
+    {"id": "INV-R2", "description": "guardrail_mode is a deterministic function of readiness_score.", "formal": "guardrail_mode = f(readiness_score) using the thresholds above."},
+    {"id": "INV-R3", "description": "Halt condition is irrevocable by configuration.", "formal": "If has_entrypoint=false AND has_control=false, readiness_score <= 0.44 always."},
+    {"id": "INV-R4", "description": "W3 cannot exceed 0.25.", "formal": "W3 = 0.25 * min(ratio * 4, 1) -> W3 in [0, 0.25]"},
+    {"id": "INV-R5", "description": "W4 cannot be negative.", "formal": "W4 = 0.20 * max(0, ...) -> W4 >= 0"},
+    {"id": "INV-R6", "description": "CI exit code is derived from guardrail_mode. Halt always blocks promotion.", "formal": "guardrail_mode=halt -> exit_code=2 -> CI fails -> promotion blocked"}
+  ],
+  "hotpath_score_definition": {
+    "type": "integer",
+    "domain": "[0, 100]",
+    "formula": "min(100, topology + size_score + family_score)",
+    "components": {
+      "topology": {
+        "range": "[0, 60]",
+        "formula": "int(60 * in_degree / max(max_in_degree, 1))",
+        "basis": "Centrality by in-degree in the real import graph.",
+        "extractor": {
+          "python": "ast.parse -> ast.Import + ast.ImportFrom",
+          "js_ts": "relative import regex: import ... from './path' | require('./path')",
+          "rust": "regex: ^use module::path",
+          "go": "regex: import block + single import"
+        },
+        "resolution": [
+          "1. Reconstruct relative path from importer directory.",
+          "2. Fallback: match by stem."
+        ],
+        "note": "External dependencies do not resolve to local files and do not contribute to in_degree."
+      },
+      "size_score": {
+        "range": "[0, 20]",
+        "thresholds": {"<=50KB": 20, "<=200KB": 12, "<=500KB": 5, ">500KB": 0}
+      },
+      "family_score": {
+        "range": "[0, 20]",
+        "values": {
+          "core": 20, "canon": 18, "runtime": 16,
+          "tests": 10, "docs": 8, "evaluation": 8,
+          "reference": 5, "memory": 4, "legacy": 2, "unknown": 6,
+          "generated": 0, "logs": 0, "exports": 0,
+          "secrets": 0, "infra": 0, "migrations": 0
+        }
+      }
+    },
+    "invariants": [
+      {"id": "INV-H1", "description": "hotpath_score is always in [0, 100].", "formal": "0 <= hotpath_score <= 100"},
+      {"id": "INV-H2", "description": "topology is the dominant component.", "formal": "topology <= 60, family_score <= 20, size_score <= 20"},
+      {"id": "INV-H3", "description": "A file not imported by any other file has topology=0.", "formal": "in_degree == 0 -> topology == 0"},
+      {"id": "INV-H4", "description": "The file with max_in_degree receives topology=60.", "formal": "in_degree == max_in_degree -> topology == 60"}
+    ]
+  },
+  "known_gaps_v04_beta": [
+    {"id": "GAP-01", "description": "JS/TS extractor resolves only relative imports. tsconfig path aliases are not resolved.", "impact": "In-degree is underestimated in projects with path aliases.", "workaround": "Add path alias resolution in v0.4-final.", "severity": "medium"},
+    {"id": "GAP-02", "description": "Dynamic JS/TS imports are not captured.", "impact": "Dynamically loaded files have undercounted in_degree.", "severity": "low"},
+    {"id": "GAP-03", "description": "Python stem fallback can produce false positives when modules share the same stem.", "impact": "in_degree may be slightly inflated in repositories with colliding module names.", "mitigation": "Fallback activates only when path resolution fails.", "severity": "low"},
+    {"id": "GAP-04", "description": "acg-gateway.py is cooperative guidance, not sandboxing.", "impact": "Read prevention is not guaranteed without runtime enforcement.", "formal_position": "ACG detects, structures, and audits. It does not prevent reads without external runtime enforcement.", "severity": "known_design_boundary"},
+    {"id": "GAP-05", "description": "Multi-agent branch conflicts are not detected in real time.", "impact": "Two agents on different branches with overlapping scope may conflict at merge time.", "severity": "medium", "roadmap": "v0.5"}
+  ]
+}
