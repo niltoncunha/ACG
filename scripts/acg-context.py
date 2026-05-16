@@ -17,7 +17,6 @@ from pathlib import Path
 
 EXCLUDE_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv", "coverage"}
 LARGE_LIMIT = 500_000
-HUGE_LIMIT = 2_000_000
 
 ORIENTATION_NAMES = {
     "readme.md",
@@ -84,7 +83,7 @@ def classify(relative_path: str, size: int) -> dict[str, object]:
             "public_safe": False,
         }
 
-    if name in ORIENTATION_NAMES or rp.startswith("00_core/") and ext in {".md", ".txt", ".yml", ".yaml"}:
+    if name in ORIENTATION_NAMES or (rp.startswith("00_core/") and ext in {".md", ".txt", ".yml", ".yaml"}):
         return {
             "role": "orientation",
             "phase": "phase1",
@@ -171,7 +170,15 @@ def scan(source: Path, limit: int) -> list[dict[str, object]]:
 def sort_records(records: list[dict[str, object]]) -> list[dict[str, object]]:
     phase_order = {"phase1": 0, "phase2": 1, "phase3": 2, "terminal": 3}
     role_order = {"orientation": 0, "control_or_schema": 1, "governance_or_memory": 2}
-    return sorted(records, key=lambda r: (phase_order.get(str(r["phase"]), 9), role_order.get(str(r["role"]), 9), int(r["size"]), str(r["relative_path"]))) )
+    return sorted(
+        records,
+        key=lambda r: (
+            phase_order.get(str(r["phase"]), 9),
+            role_order.get(str(r["role"]), 9),
+            int(r["size"]),
+            str(r["relative_path"]),
+        ),
+    )
 
 
 def write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
