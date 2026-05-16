@@ -10,16 +10,34 @@ The user may start with:
 I have this folder. Help me organize it for AI work.
 ```
 
-ACG must convert that into:
+ACG converts that into:
 
 ```txt
 full structural inventory
 folder family classification
 hotpath scoring
-reading queues
+phase queues
+topology artifacts when code exists
+surface summaries
 phase packs
 execution brief
 human approval points
+```
+
+---
+
+## Current command
+
+Recommended v0.4-alpha entrypoint:
+
+```bash
+python scripts/acg-v04.py --source /path/to/project --out .acg
+```
+
+Fast first run:
+
+```bash
+python scripts/acg-v04.py --source /path/to/project --out .acg --skip-lexical-index
 ```
 
 ---
@@ -28,17 +46,25 @@ human approval points
 
 Convert a large folder into a controlled context system:
 
+- `ACG_MASTER.md` — single AI entrypoint;
 - `context_manifest.jsonl` — all indexed files with metadata and strategy;
-- `structure_map.md` — human-readable map of the codebase shape;
+- `structure_map.md` — human-readable map of the repository shape;
+- `cluster_map.md` — topology map when code exists;
+- `surface_summaries.md` — allowed summaries of high-weight code surfaces;
 - `hotpaths.json` — highest-value files by score;
-- `reading_queues.json` — ordered reading queues;
+- `phase1_queue.md` — first allowed reading queue;
+- `phase2_queue.md` — next safe candidates, not opened until approved;
+- `approval_required.md` — files requiring explicit human approval;
 - `search_targets.md` — large or terminal assets for targeted search only;
 - `phase1_pack/` — copied files for first AI orientation;
-- `execution_brief.md` — instructions the AI must follow.
+- `execution_brief.md` — instructions the AI must follow;
+- `next_prompt.md` — automatic continuation protocol;
+- `phase2_plan_template.md` — strict NEXT format;
+- `context_payload.json` — optional compact handoff format.
 
 The phase pack is not the analysis.
 
-The structure map is the main artifact.
+The structure map plus queues plus topology artifacts are the operating map.
 
 ---
 
@@ -52,7 +78,7 @@ The AI may see:
 00_core/README.md
 ```
 
-but fail to open it because the real file lives elsewhere.
+but fail to understand whether it is an entrypoint, support file, terminal asset, or risky historical artifact.
 
 ACG therefore preserves:
 
@@ -65,50 +91,11 @@ folder_family
 hotpath_score
 risk_score
 strategy
+allowed_to_open
+requires_human_approval
 ```
 
 and explains how each file should be handled.
-
----
-
-## Manifest v0.3 fields
-
-Each file is represented with fields like:
-
-```json
-{
-  "relative_path": "src/auth/index.ts",
-  "absolute_path": "E:/project/src/auth/index.ts",
-  "size": 1420,
-  "modified": "2026-05-16T11:29:03Z",
-  "extension": ".ts",
-  "depth": 2,
-  "folder_family": "core",
-  "family_tier": "priority",
-  "role": "source_code",
-  "hotpath_score": 87,
-  "risk_score": 12,
-  "strategy": "open_now",
-  "allowed_to_open": true,
-  "allowed_to_edit": false,
-  "requires_human_approval": false,
-  "public_safe": false
-}
-```
-
----
-
-## Strategies
-
-| Strategy | Meaning |
-|---|---|
-| `open_now` | Safe and important enough for early reading. |
-| `open_later` | Useful, but not first. |
-| `search_only` | Do not open fully; use targeted search. |
-| `index_only` | Keep in inventory, but do not read by default. |
-| `human_only` | Requires explicit human approval. |
-| `terminal_asset` | Large/historical/reference asset; never read blindly. |
-| `ignore` | Generated/cache/noise. |
 
 ---
 
@@ -117,41 +104,25 @@ Each file is represented with fields like:
 ```txt
 [00] Human vague intent
        ↓
-[01] ACG derives/asks for task contract
+[01] ACG scans the full source folder
        ↓
-[02] ACG scans the full source folder
+[02] ACG classifies folder families
        ↓
-[03] ACG classifies folder families
+[03] ACG scores hotpaths and risks
        ↓
-[04] ACG scores hotpaths and risks
+[04] ACG builds topology/surfaces when code exists
        ↓
-[05] ACG writes structure_map.md
+[05] ACG writes ACG_MASTER.md
        ↓
-[06] ACG writes reading_queues.json
+[06] AI opens ACG_MASTER.md only
        ↓
-[07] ACG creates phase1_pack/
+[07] AI reads required artifacts
        ↓
-[08] ACG writes execution_brief.md
+[08] AI reads only phase1_pack/
        ↓
-[09] AI reads only the allowed pack/brief
+[09] AI returns SCOPE/RISKS/QUESTIONS/NEXT
        ↓
-[10] AI returns orientation + questions
-       ↓
-[11] Human approves next phase
-```
-
----
-
-## Command
-
-```bash
-python3 scripts/acg-scout.py --source /path/to/project --out .acg
-```
-
-Windows:
-
-```powershell
-python scripts\acg-scout.py --source "E:\path\to\project" --out ".acg"
+[10] Human approves or rejects Phase 2
 ```
 
 ---
@@ -163,13 +134,10 @@ The AI should not be asked to read everything.
 It should receive:
 
 ```txt
-structure_map.md
-reading_queues.json
-execution_brief.md
-phase1_pack/
+Open .acg/ACG_MASTER.md first and follow it exactly.
 ```
 
-and then proceed one phase at a time.
+Everything else is derived from the generated ACG package.
 
 ---
 
