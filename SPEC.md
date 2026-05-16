@@ -1,6 +1,8 @@
-# ACG Specification v0.4-alpha
+# ACG Specification v0.4-beta
 
-ACG (Agentic Code Guidance) is a structural guidance, topology-aware context, and mechanical enforcement layer for AI-assisted software work.
+ACG (Agentic Code Guidance) is a structural guidance, topology-aware context, and mechanical enforcement layer for AI-assisted software work over large codebases.
+
+---
 
 ## Core Thesis
 
@@ -45,7 +47,7 @@ Its job is to build a structural map of the repository or file bundle before the
 
 The Scout indexes the whole folder, but does not ask the AI to read the whole folder.
 
-Core outputs:
+Current stable package outputs include:
 
 ```txt
 .acg/ACG_MASTER.md
@@ -71,9 +73,9 @@ The primary AI entrypoint is:
 
 The phase pack is derived from the full map. It is not the complete understanding of the codebase.
 
-### 3. Topology Layer v0.4-alpha
+### 3. Topology Layer v0.4-beta
 
-The v0.4-alpha orchestrator adds topology-aware artifacts:
+The topology layer adds import-graph and formal scoring artifacts:
 
 ```txt
 .acg/artifacts/import_graph.json
@@ -81,9 +83,12 @@ The v0.4-alpha orchestrator adds topology-aware artifacts:
 .acg/artifacts/surface_summaries.md
 .acg/artifacts/context_payload.json
 .acg/artifacts/performance_report.md
+.acg/scout_report.json                 # beta schema target
+schemas/scout_report.schema.json
+schemas/readiness_invariants.json
 ```
 
-These artifacts do not replace the phase queues.
+These artifacts do not replace phase queues.
 
 They help the AI understand structural centrality and public code surfaces without opening every source file.
 
@@ -100,7 +105,7 @@ The enforcement layer keeps four hard rules:
 
 ## Recommended command
 
-Run v0.4-alpha:
+Current user entrypoint:
 
 ```bash
 python scripts/acg-v04.py --source /path/to/project --out .acg
@@ -112,7 +117,9 @@ Fast mode:
 python scripts/acg-v04.py --source /path/to/project --out .acg --skip-lexical-index
 ```
 
-The older `acg-scout.py` remains as a stable Structure Scout component, but `acg-v04.py` is the recommended user entrypoint.
+`acg-scout.py` remains the stable package generator used by `acg-v04.py`.
+
+The v0.4-beta target is to merge import-graph-driven `hotpath_score` into the stable Scout without breaking the `--source/--out` CLI or the `.acg/artifacts/` layout.
 
 ---
 
@@ -128,6 +135,7 @@ Each indexed file receives fields like:
   "role": "source_code",
   "hotpath_score": 87,
   "risk_score": 12,
+  "in_degree": 14,
   "strategy": "open_now",
   "allowed_to_open": true,
   "allowed_to_edit": false,
@@ -168,53 +176,92 @@ unknown
 
 ---
 
-## v0.4 topology artifacts
+## Formal Definitions
 
-### `import_graph.json`
+This section is normative. The schemas in `schemas/` are the authority.
 
-Machine-readable static import graph.
-
-It includes:
-
-- resolved internal imports where possible;
-- `in_degree`;
-- `out_degree`;
-- `git_velocity_90d` when a Git repository is available;
-- `architectural_weight`;
-- public surface count.
-
-Do not ask the AI to read this file fully by default. It is for tools and diagnostics.
-
-### `cluster_map.md`
-
-Human-readable topology summary.
-
-The AI should read this before proposing Phase 2.
-
-### `surface_summaries.md`
-
-Allowed summaries of high-weight code surfaces.
-
-Important distinction:
+### hotpath_score
 
 ```txt
-surface_summaries.md may be read.
-The original files summarized there keep their original queue status.
+hotpath_score in [0, 100]
+
+hotpath_score = min(100, topology + size_score + family_score)
+
+topology     in [0, 60] = int(60 * in_degree / max(max_in_degree, 1))
+size_score   in [0, 20] = 20 if <=50KB | 12 if <=200KB | 5 if <=500KB | 0 otherwise
+family_score in [0, 20] = see schemas/readiness_invariants.json
 ```
 
-If an original file is `search_only`, the summary does not automatically authorize opening the original.
+Topology is the primary driver, with 60% of the ceiling.
 
-### `context_payload.json`
+It is derived from import-graph centrality, not file-name heuristics:
 
-Optional structured payload mode.
+- Python: `ast.parse` -> `ast.Import` + `ast.ImportFrom`.
+- JS/TS: relative `import ... from './path'` and `require('./path')`.
+- Rust: `use module::path`.
+- Go: import blocks and single-line imports.
 
-Use it for compact handoff or single-file context passing. Do not duplicate it with normal Phase 1 file reading unless useful.
+Resolution order:
 
-### `performance_report.md`
+1. Reconstruct the path from the importer's directory.
+2. Try supported source extensions.
+3. Use stem fallback only when path reconstruction fails.
 
-Runtime cost report.
+External dependencies do not resolve to local files and do not contribute to `in_degree`. That is correct: `hotpath_score` reflects internal architectural centrality.
 
-Used to check that Scout stays fast enough for adoption.
+#### Invariants: hotpath
+
+| ID | Invariant |
+|---|---|
+| INV-H1 | `0 <= hotpath_score <= 100` |
+| INV-H2 | `topology <= 60`, `family_score <= 20`, `size_score <= 20` |
+| INV-H3 | `in_degree == 0 -> topology == 0` |
+| INV-H4 | `in_degree == max_in_degree -> topology == 60` |
+
+### readiness_score
+
+```txt
+readiness_score in [0.0, 1.0]
+
+readiness_score = round(W1 + W2 + W3 + W4, 3)
+
+W1 = 0.30 * has_entrypoint
+W2 = 0.25 * has_control_files
+W3 = 0.25 * min(open_now_count / total_files * 4, 1)
+W4 = 0.20 * max(0, 1 - broken_refs_count / total_files)
+
+Halt condition:
+  if (not has_entrypoint) and (not has_control_files):
+      readiness_score = min(readiness_score, 0.44)
+```
+
+The halt condition guarantees that a repository with neither a detected entrypoint nor control files can never silently proceed.
+
+#### guardrail_mode thresholds
+
+| Mode | Condition | CI exit code | Behavior |
+|---|---|---:|---|
+| `silent` | score >= 0.65 | 0 | Proceed. |
+| `warn` | 0.45 <= score < 0.65 | 1 | Proceed with human checkpoint. |
+| `halt` | score < 0.45 | 2 | Block promotion. |
+
+#### Invariants: readiness
+
+| ID | Invariant |
+|---|---|
+| INV-R1 | `0.0 <= readiness_score <= 1.0` |
+| INV-R2 | `guardrail_mode` is a deterministic function of `readiness_score`. |
+| INV-R3 | Halt condition is irrevocable by configuration. |
+| INV-R4 | `W3 in [0, 0.25]` |
+| INV-R5 | `W4 >= 0` |
+| INV-R6 | `guardrail_mode=halt -> exit_code=2 -> CI fails -> promotion blocked` |
+
+The full machine-readable contract is in:
+
+```txt
+schemas/readiness_invariants.json
+schemas/scout_report.schema.json
+```
 
 ---
 
@@ -240,20 +287,17 @@ If the AI proposes files outside the current phase queue, asks to read terminal 
 
 ---
 
-## Enforcement authority
+## Enforcement vs Guidance
+
+ACG has two distinct control levels:
+
+| Layer | Control type |
+|---|---|
+| `AGENTS.md`, adapter docs, prompts | Cooperative guidance only |
+| `acg-gateway.py` | Advisory gate, not sandbox |
+| `acg-enforce.py`, CI, branch/scope checks | Mechanical enforcement |
 
 Natural language instructions are context, not enforcement.
-
-Files such as:
-
-```txt
-AGENTS.md
-CLAUDE.md
-.cursor/rules
-ACG_MASTER.md
-```
-
-are useful guidance, but not a sandbox.
 
 Mechanical authority comes from:
 
@@ -270,18 +314,17 @@ branch and scope checks
 
 ---
 
-## Process discipline
+## Known Gaps v0.4-beta
 
-Recommended operational discipline:
+| ID | Gap | Severity |
+|---|---|---|
+| GAP-01 | JS/TS path aliases are not resolved yet. | medium |
+| GAP-02 | Dynamic imports are not captured yet. | low |
+| GAP-03 | Python stem fallback can produce false positives. | low |
+| GAP-04 | Gateway is advisory; not a real sandbox. | design boundary |
+| GAP-05 | Multi-agent branch conflict detection is absent. | medium |
 
-- phased reading;
-- small scoped tasks;
-- human checkpoints;
-- exact file lists;
-- impact maps;
-- done-when per slice;
-- circuit breakers;
-- external verification before promotion.
+Full gap descriptions with mitigations are in `schemas/readiness_invariants.json` and `KNOWN_LIMITATIONS.md`.
 
 ---
 
@@ -289,14 +332,22 @@ Recommended operational discipline:
 
 Future versions may include:
 
-- direct integration of import graph boosts into primary hotpath scoring;
-- stronger gateway/MCP read control;
-- semantic index with embeddings;
-- token budget optimizer;
+- merge of import-graph `hotpath_score` into the stable Scout package generator;
+- tsconfig path alias resolution;
+- semantic diff;
 - behavioral baselines;
 - characterization tests;
 - adversarial review agents;
-- policy engines;
-- multi-agent orchestration.
+- multi-agent branch conflict detection;
+- telemetry;
+- policy engines.
 
-These are outside the minimal v0.4-alpha core.
+These are outside the minimal core.
+
+---
+
+## Principle
+
+ACG does not make AI-generated code correct.
+
+ACG makes large-codebase AI work guided, structured, scoped, evidenced, and harder to promote when it goes wrong.
