@@ -15,6 +15,7 @@ Output layout:
     reading_queues.json
     search_targets.md
     execution_brief.md
+    next_prompt.md
 
 No external dependencies.
 """
@@ -37,6 +38,7 @@ EXCLUDE_DIRS = {
 }
 
 BINARY_OR_DATABASE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".pkl", ".pickle"}
+TEXT_EXTENSIONS = {".md", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".sh", ".ps1"}
 
 LEGACY_ROOT_ARTIFACTS = {
     "context_manifest.jsonl",
@@ -45,6 +47,7 @@ LEGACY_ROOT_ARTIFACTS = {
     "reading_queues.json",
     "search_targets.md",
     "execution_brief.md",
+    "next_prompt.md",
 }
 
 CRITICAL_NAME_WEIGHTS = {
@@ -174,7 +177,7 @@ def detect_role(relative_path: str, extension: str, family: str) -> tuple[str, l
         return "governance_or_memory", ["governance_family"]
     if family in {"tests", "evaluation"}:
         return "validation", ["validation_family"]
-    if extension in {".py", ".ts", ".js", ".go", ".rs", ".java"}:
+    if extension in {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java"}:
         return "source_code", ["source_extension"]
     if family in TERMINAL_FAMILIES or family == "reference":
         return "reference_or_terminal_asset", ["terminal_or_reference_family"]
@@ -319,6 +322,17 @@ def sort_hot(entries: Iterable[FileEntry]) -> list[FileEntry]:
     return sorted(entries, key=lambda e: (-e.hotpath_score, e.risk_score, e.depth, e.relative_path))
 
 
+def is_safe_read_candidate(entry: FileEntry) -> bool:
+    return (
+        entry.strategy in {"open_now", "open_later"}
+        and not entry.requires_human_approval
+        and entry.folder_family not in TERMINAL_FAMILIES
+        and entry.folder_family not in HUMAN_ONLY_FAMILIES
+        and entry.folder_family != "binary_or_database"
+        and entry.extension in TEXT_EXTENSIONS
+    )
+
+
 def write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -346,10 +360,10 @@ def family_summary(entries: list[FileEntry]) -> list[dict[str, object]]:
 
 def build_queues(entries: list[FileEntry], phase1_max_files: int, phase1_max_bytes: int, phase2_max_files: int) -> dict[str, object]:
     hot = sort_hot(entries)
-    phase1 = []
+    phase1: list[FileEntry] = []
     total = 0
     for entry in hot:
-        if entry.strategy != "open_now":
+        if entry.strategy != "open_now" or not is_safe_read_candidate(entry):
             continue
         if len(phase1) >= phase1_max_files:
             break
@@ -357,7 +371,11 @@ def build_queues(entries: list[FileEntry], phase1_max_files: int, phase1_max_byt
             continue
         phase1.append(entry)
         total += entry.size
-    phase2 = [e for e in hot if e.strategy == "open_later" and e not in phase1][:phase2_max_files]
+
+    phase1_paths = {e.relative_path for e in phase1}
+    phase2_candidates = [e for e in hot if e.relative_path not in phase1_paths and is_safe_read_candidate(e)]
+    phase2 = phase2_candidates[:phase2_max_files]
+    approval_required = [e for e in hot if e.strategy in {"open_now", "open_later"} and e.requires_human_approval]
     search_targets = [e for e in hot if e.strategy in {"search_only", "terminal_asset"}]
     human_only = [e for e in hot if e.strategy == "human_only"]
     ignored = [e for e in hot if e.strategy == "ignore"]
@@ -365,6 +383,7 @@ def build_queues(entries: list[FileEntry], phase1_max_files: int, phase1_max_byt
         "phase1": [asdict(e) for e in phase1],
         "phase1_total_bytes": total,
         "phase2": [asdict(e) for e in phase2],
+        "approval_required": [asdict(e) for e in approval_required],
         "search_targets": [asdict(e) for e in search_targets],
         "human_only": [asdict(e) for e in human_only],
         "ignored": [asdict(e) for e in ignored],
@@ -388,6 +407,7 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
         "- Full manifest: `context_manifest.jsonl`",
         "- Machine-readable queues: `reading_queues.json`",
         "- Full search-only list: `search_targets.md`",
+        "- Next prompt: `next_prompt.md`",
         "- AI handoff: `execution_brief.md`",
         "- Controlled initial files: `../phase1_pack/`",
         "",
@@ -453,6 +473,7 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
         "Do not read the entire source folder. Read only the Phase 1 pack first.",
         "Do not edit files. This is orientation only.",
         "Do not claim final understanding. Return uncertainties explicitly.",
+        "After Phase 1, use `next_prompt.md`; do not rely on the human knowing what to ask next.",
         "",
         "## Required artifacts to inspect first",
         "",
@@ -460,6 +481,7 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
         "- `structure_map.md`",
         "- `reading_queues.json`",
         "- `search_targets.md`",
+        "- `next_prompt.md`",
         "- `../phase1_pack/`",
         "",
         "## You may read now",
@@ -484,9 +506,76 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_next_prompt(path: Path, queues: dict[str, object]) -> None:
+    phase2 = queues.get("phase2", [])
+    approval_required = queues.get("approval_required", [])
+    lines = [
+        "# ACG Next Prompt",
+        "",
+        "Use this after the AI finishes Phase 1. The human should not need to invent the next question.",
+        "",
+        "## Copy/paste to the AI",
+        "",
+        "```txt",
+        "ACG Phase 1 accepted.",
+        "",
+        "Do not open new files yet.",
+        "Do not read the original source folder directly.",
+        "Do not open search-only, terminal, legacy, log, export, database or binary files.",
+        "Do not assume the user's final objective if it was not provided.",
+        "",
+        "Your next task is to produce a bounded Phase 2 plan using only:",
+        "- .acg/artifacts/reading_queues.json",
+        "- .acg/artifacts/structure_map.md",
+        "- .acg/artifacts/search_targets.md",
+        "",
+        "First classify the user's intent into one of these modes:",
+        "1. MAP_ONLY - understand/organize the codebase without edits",
+        "2. REFACTOR - change structure while preserving behavior",
+        "3. BUGFIX - investigate a concrete failure",
+        "4. FEATURE - add a bounded capability",
+        "5. DOCS - improve documentation or onboarding",
+        "6. TESTS - improve verification coverage",
+        "7. SECURITY - inspect sensitive or risky behavior",
+        "8. UNKNOWN - objective not clear enough",
+        "",
+        "If the mode is UNKNOWN, ask at most 3 concrete questions and stop.",
+        "If the mode is known, propose a Phase 2 Reading Plan from the official phase2 queue only.",
+        "",
+        "Return only:",
+        "## ACG Phase 2 Reading Plan",
+        "1. Detected mode",
+        "2. Exact files requested for Phase 2",
+        "3. Why each file is needed",
+        "4. What question each file should answer",
+        "5. Files explicitly excluded",
+        "6. Approval-required exceptions, if any",
+        "7. Stop and wait for human approval",
+        "```",
+        "",
+        "## Current safe Phase 2 candidates",
+        "",
+    ]
+    if phase2:
+        for item in phase2:
+            lines.append(f"- `{item['relative_path']}` - {item['role']}, score {item['hotpath_score']}")
+    else:
+        lines.append("- None generated. The AI must ask for objective clarification or request a human-approved exception.")
+    lines += ["", "## Approval-required exceptions", ""]
+    if approval_required:
+        for item in approval_required[:30]:
+            lines.append(f"- `{item['relative_path']}` - {item['folder_family']}, {item['strategy']}, risk {item['risk_score']}")
+        if len(approval_required) > 30:
+            lines.append(f"- ... {len(approval_required) - 30} more in `reading_queues.json` under `approval_required`.")
+    else:
+        lines.append("- None.")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dict[str, object]) -> None:
     phase1 = queues.get("phase1", [])
     phase2 = queues.get("phase2", [])
+    approval_required = queues.get("approval_required", [])
     search_targets = queues.get("search_targets", [])
     human_only = queues.get("human_only", [])
     ignored = queues.get("ignored", [])
@@ -510,6 +599,7 @@ def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dic
         "    reading_queues.json",
         "    search_targets.md",
         "    execution_brief.md",
+        "    next_prompt.md",
         "```",
         "",
         "## Source",
@@ -520,10 +610,22 @@ def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dic
         "",
         f"- Total indexed files: {len(entries)}",
         f"- Phase 1 files: {len(phase1)}",
-        f"- Phase 2 candidates: {len(phase2)}",
+        f"- Safe Phase 2 candidates: {len(phase2)}",
+        f"- Approval-required candidates: {len(approval_required)}",
         f"- Search-only / terminal assets: {len(search_targets)}",
         f"- Human-only files: {len(human_only)}",
         f"- Ignored files: {len(ignored)}",
+        "",
+        "## What the human does",
+        "",
+        "The human does not need to invent custom follow-up prompts.",
+        "",
+        "Use this order:",
+        "",
+        "1. Give the AI this file.",
+        "2. Ask it to follow `artifacts/execution_brief.md`.",
+        "3. After Phase 1, use `artifacts/next_prompt.md`.",
+        "4. Approve or reject the proposed Phase 2 plan.",
         "",
         "## Read Order for AI",
         "",
@@ -531,8 +633,9 @@ def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dic
         "2. Read `artifacts/structure_map.md` for the structural overview.",
         "3. Read `artifacts/reading_queues.json` for the complete operational queues.",
         "4. Read `artifacts/search_targets.md` to understand what must not be opened directly.",
-        "5. Read only files copied inside `phase1_pack/`.",
-        "6. Stop and return the required confirmation before asking for Phase 2.",
+        "5. Read `artifacts/next_prompt.md` so you know how to continue after Phase 1.",
+        "6. Read only files copied inside `phase1_pack/`.",
+        "7. Stop and return the required confirmation before asking for Phase 2.",
         "",
         "## Do Not Do",
         "",
@@ -541,6 +644,7 @@ def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dic
         "- Do not treat `... N more` summaries as complete lists.",
         "- Do not edit files during orientation.",
         "- Do not claim final understanding from Phase 1 alone.",
+        "- Do not ask the human vague questions such as 'what next?' Use `next_prompt.md`.",
         "",
         "## Required AI Confirmation",
         "",
@@ -548,17 +652,12 @@ def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dic
         "ACG-UNDERSTOOD: structure-scout",
         "SCOPE: files you actually read",
         "RISKS: key risks before deeper processing",
-        "QUESTIONS: what needs human approval",
+        "QUESTIONS: objective questions or approval requests only",
         "```",
         "",
         "## Human Next Step",
         "",
-        "After the AI returns the confirmation, decide whether to approve Phase 2 based on:",
-        "",
-        "- whether it respected the read order;",
-        "- whether it avoided terminal/search-only assets;",
-        "- whether its questions are objective;",
-        "- whether it proposed a bounded next reading queue.",
+        "After the AI returns the confirmation, open `artifacts/next_prompt.md` and paste the Copy/paste block to the AI.",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -598,6 +697,7 @@ def main() -> int:
     write_structure_map(artifacts / "structure_map.md", source, entries, queues)
     write_search_targets(artifacts / "search_targets.md", queues)
     write_execution_brief(artifacts / "execution_brief.md", queues)
+    write_next_prompt(artifacts / "next_prompt.md", queues)
     copy_phase1(out, queues)
     write_master(out / "ACG_MASTER.md", source, entries, queues)
 
@@ -607,6 +707,7 @@ def main() -> int:
     print(f"Artifacts folder: {artifacts}")
     print(f"Structure map: {artifacts / 'structure_map.md'}")
     print(f"Reading queues: {artifacts / 'reading_queues.json'}")
+    print(f"Next prompt: {artifacts / 'next_prompt.md'}")
     print(f"Phase 1 pack: {out / 'phase1_pack'}")
     print(f"Execution brief: {artifacts / 'execution_brief.md'}")
     return 0
