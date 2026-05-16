@@ -1,6 +1,6 @@
-# ACG Specification v0.3
+# ACG Specification v0.4-alpha
 
-ACG (Agentic Code Guidance) is a structural guidance and mechanical enforcement layer for AI-assisted software work.
+ACG (Agentic Code Guidance) is a structural guidance, topology-aware context, and mechanical enforcement layer for AI-assisted software work.
 
 ## Core Thesis
 
@@ -23,7 +23,7 @@ ACG maps the shape of the whole codebase first, then gives the AI a controlled r
 
 ## Layers
 
-ACG has three layers.
+ACG has four practical layers.
 
 ### 1. Guided Task Contract
 
@@ -45,27 +45,49 @@ Its job is to build a structural map of the repository or file bundle before the
 
 The Scout indexes the whole folder, but does not ask the AI to read the whole folder.
 
-Outputs:
+Core outputs:
 
 ```txt
-.acg/context_manifest.jsonl
-.acg/structure_map.md
-.acg/hotpaths.json
-.acg/reading_queues.json
-.acg/search_targets.md
-.acg/execution_brief.md
+.acg/ACG_MASTER.md
+.acg/artifacts/context_manifest.jsonl
+.acg/artifacts/structure_map.md
+.acg/artifacts/hotpaths.json
+.acg/artifacts/reading_queues.json
+.acg/artifacts/phase1_queue.md
+.acg/artifacts/phase2_queue.md
+.acg/artifacts/approval_required.md
+.acg/artifacts/search_targets.md
+.acg/artifacts/execution_brief.md
+.acg/artifacts/next_prompt.md
+.acg/artifacts/phase2_plan_template.md
 .acg/phase1_pack/
 ```
 
-The primary artifact is:
+The primary AI entrypoint is:
 
 ```txt
-.acg/structure_map.md
+.acg/ACG_MASTER.md
 ```
 
 The phase pack is derived from the full map. It is not the complete understanding of the codebase.
 
-### 3. Enforcement Core
+### 3. Topology Layer v0.4-alpha
+
+The v0.4-alpha orchestrator adds topology-aware artifacts:
+
+```txt
+.acg/artifacts/import_graph.json
+.acg/artifacts/cluster_map.md
+.acg/artifacts/surface_summaries.md
+.acg/artifacts/context_payload.json
+.acg/artifacts/performance_report.md
+```
+
+These artifacts do not replace the phase queues.
+
+They help the AI understand structural centrality and public code surfaces without opening every source file.
+
+### 4. Enforcement Core
 
 The enforcement layer keeps four hard rules:
 
@@ -76,20 +98,25 @@ The enforcement layer keeps four hard rules:
 
 ---
 
-## Structure Scout v0.3
+## Recommended command
 
-The Scout performs:
+Run v0.4-alpha:
 
-```txt
-full inventory
-folder family classification
-hotpath scoring
-risk scoring
-strategy assignment
-reading queue generation
-search target extraction
-execution brief generation
+```bash
+python scripts/acg-v04.py --source /path/to/project --out .acg
 ```
+
+Fast mode:
+
+```bash
+python scripts/acg-v04.py --source /path/to/project --out .acg --skip-lexical-index
+```
+
+The older `acg-scout.py` remains as a stable Structure Scout component, but `acg-v04.py` is the recommended user entrypoint.
+
+---
+
+## File strategies
 
 Each indexed file receives fields like:
 
@@ -107,8 +134,6 @@ Each indexed file receives fields like:
   "requires_human_approval": false
 }
 ```
-
-### Folder families
 
 Typical families:
 
@@ -131,8 +156,6 @@ migrations
 unknown
 ```
 
-### Strategies
-
 | Strategy | Meaning |
 |---|---|
 | `open_now` | Safe and important enough for early reading. |
@@ -145,53 +168,79 @@ unknown
 
 ---
 
-## AI Handshake
+## v0.4 topology artifacts
 
-Before execution, ACG should generate an execution brief.
+### `import_graph.json`
 
-The AI should confirm understanding before doing deeper work:
+Machine-readable static import graph.
+
+It includes:
+
+- resolved internal imports where possible;
+- `in_degree`;
+- `out_degree`;
+- `git_velocity_90d` when a Git repository is available;
+- `architectural_weight`;
+- public surface count.
+
+Do not ask the AI to read this file fully by default. It is for tools and diagnostics.
+
+### `cluster_map.md`
+
+Human-readable topology summary.
+
+The AI should read this before proposing Phase 2.
+
+### `surface_summaries.md`
+
+Allowed summaries of high-weight code surfaces.
+
+Important distinction:
 
 ```txt
-ACG-UNDERSTOOD: <task-id>
-SCOPE: <files actually read or planned>
-RISKS: <what could break or confuse analysis>
-QUESTIONS: <what needs human approval>
+surface_summaries.md may be read.
+The original files summarized there keep their original queue status.
 ```
 
-If the AI proposes files outside the allowed path or asks to read terminal assets directly, the process should stop and ask the human.
+If an original file is `search_only`, the summary does not automatically authorize opening the original.
+
+### `context_payload.json`
+
+Optional structured payload mode.
+
+Use it for compact handoff or single-file context passing. Do not duplicate it with normal Phase 1 file reading unless useful.
+
+### `performance_report.md`
+
+Runtime cost report.
+
+Used to check that Scout stays fast enough for adoption.
 
 ---
 
-## Process Layer
+## AI Handshake
 
-Recommended operational discipline:
+Before deeper work, the AI should confirm:
 
-- phased reading;
-- small scoped tasks;
-- human checkpoints;
-- impact maps;
-- done-when per slice;
-- circuit breakers.
+```txt
+ACG-UNDERSTOOD: structure-scout
+SCOPE: files actually read
+RISKS: key risks before deeper processing
+QUESTIONS: objective human approvals needed
+NEXT: bounded Phase 2 plan or clarification questions
+```
 
----
+The NEXT block must follow:
 
-## Future Layer
+```txt
+.acg/artifacts/phase2_plan_template.md
+```
 
-Future versions may include:
-
-- semantic diff;
-- behavioral baselines;
-- characterization tests;
-- adversarial review agents;
-- telemetry;
-- policy engines;
-- multi-agent orchestration.
-
-These are outside the minimal core.
+If the AI proposes files outside the current phase queue, asks to read terminal assets directly, or asks vague questions like "what next?", the process should stop.
 
 ---
 
-## Principle
+## Enforcement authority
 
 Natural language instructions are context, not enforcement.
 
@@ -201,17 +250,53 @@ Files such as:
 AGENTS.md
 CLAUDE.md
 .cursor/rules
+ACG_MASTER.md
 ```
 
-are useful adapters, but not the authority of the method.
+are useful guidance, but not a sandbox.
 
-The authority is:
+Mechanical authority comes from:
 
 ```txt
-structure_map.md
-reading_queues.json
-execution_brief.md
 acg.yaml
+scripts/acg-enforce.py
+GitHub Actions / CI
 external verification
-CI evidence
+JSONL evidence
+branch and scope checks
 ```
+
+`acg-gateway.py` can provide gateway-style read control when the agent is forced to use it. It is not full enforcement if the agent also has unrestricted filesystem access.
+
+---
+
+## Process discipline
+
+Recommended operational discipline:
+
+- phased reading;
+- small scoped tasks;
+- human checkpoints;
+- exact file lists;
+- impact maps;
+- done-when per slice;
+- circuit breakers;
+- external verification before promotion.
+
+---
+
+## Future Layer
+
+Future versions may include:
+
+- direct integration of import graph boosts into primary hotpath scoring;
+- stronger gateway/MCP read control;
+- semantic index with embeddings;
+- token budget optimizer;
+- behavioral baselines;
+- characterization tests;
+- adversarial review agents;
+- policy engines;
+- multi-agent orchestration.
+
+These are outside the minimal v0.4-alpha core.
