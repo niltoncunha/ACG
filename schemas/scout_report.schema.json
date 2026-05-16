@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/niltoncunha/ACG/schemas/scout_report.schema.json",
+  "title": "ACG Scout Report",
+  "description": "Formal output of Structure Scout v0.4-beta. hotpath_score is driven by import-graph centrality. readiness_score has a formal weighted definition.",
+  "type": "object",
+  "required": [
+    "acg_version",
+    "generated_at",
+    "root",
+    "system_profile",
+    "readiness_score",
+    "guardrail_mode",
+    "attention_queue",
+    "phased_reading_plan",
+    "broken_refs",
+    "execution_brief",
+    "context_manifest"
+  ],
+  "properties": {
+    "acg_version": {"type": "string", "examples": ["0.4-beta"]},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "root": {"type": "string"},
+    "system_profile": {
+      "type": "object",
+      "required": ["total_files", "language_map", "has_entrypoint", "has_control_files"],
+      "properties": {
+        "total_files": {"type": "integer", "minimum": 0},
+        "language_map": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "has_entrypoint": {"type": "boolean"},
+        "has_control_files": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "readiness_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "guardrail_mode": {"type": "string", "enum": ["silent", "warn", "halt"]},
+    "attention_queue": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"$ref": "#/$defs/file_record"}
+    },
+    "phased_reading_plan": {
+      "type": "object",
+      "required": ["phase1", "phase2", "phase3"],
+      "properties": {
+        "phase1": {"type": "array", "items": {"$ref": "#/$defs/file_record"}},
+        "phase2": {"type": "array", "items": {"$ref": "#/$defs/file_record"}},
+        "phase3": {"type": "array", "items": {"$ref": "#/$defs/file_record"}}
+      }
+    },
+    "broken_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "missing"],
+        "properties": {
+          "source": {"type": "string"},
+          "missing": {"type": "string"}
+        }
+      }
+    },
+    "execution_brief": {"$ref": "#/$defs/execution_brief"},
+    "context_manifest": {"type": "array", "items": {"$ref": "#/$defs/file_record"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "file_record": {
+      "type": "object",
+      "required": [
+        "relative_path", "absolute_path", "size_bytes", "modified",
+        "extension", "folder_family", "role",
+        "hotpath_score", "risk_score", "in_degree",
+        "strategy", "allowed_to_open", "allowed_to_edit",
+        "requires_human_approval"
+      ],
+      "properties": {
+        "relative_path": {"type": "string"},
+        "absolute_path": {"type": "string"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "modified": {"type": "string", "format": "date-time"},
+        "extension": {"type": "string"},
+        "folder_family": {
+          "type": "string",
+          "enum": [
+            "secrets", "infra", "migrations", "tests", "docs", "logs", "exports",
+            "generated", "legacy", "reference", "memory", "canon", "core",
+            "runtime", "evaluation", "unknown"
+          ]
+        },
+        "role": {"type": "string", "enum": ["source_code", "other"]},
+        "hotpath_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "risk_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "in_degree": {"type": "integer", "minimum": 0},
+        "strategy": {
+          "type": "string",
+          "enum": ["open_now", "open_later", "search_only", "index_only", "human_only", "terminal_asset", "ignore"]
+        },
+        "allowed_to_open": {"type": "boolean"},
+        "allowed_to_edit": {"type": "boolean"},
+        "requires_human_approval": {"type": "boolean"}
+      },
+      "additionalProperties": false,
+      "if": {"properties": {"strategy": {"const": "human_only"}}},
+      "then": {
+        "properties": {
+          "allowed_to_open": {"const": false},
+          "allowed_to_edit": {"const": false},
+          "requires_human_approval": {"const": true}
+        }
+      }
+    },
+    "execution_brief": {
+      "type": "object",
+      "required": [
+        "task_id", "root", "total_files",
+        "readiness_score", "guardrail_mode",
+        "readiness_components", "import_graph", "instruction"
+      ],
+      "properties": {
+        "task_id": {"type": "string"},
+        "root": {"type": "string"},
+        "total_files": {"type": "integer"},
+        "readiness_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "guardrail_mode": {"type": "string", "enum": ["silent", "warn", "halt"]},
+        "readiness_components": {
+          "type": "object",
+          "required": ["W1_entrypoint_detected", "W2_control_files_present", "W3_open_now_count", "W4_broken_refs_count"],
+          "properties": {
+            "W1_entrypoint_detected": {"type": "boolean"},
+            "W2_control_files_present": {"type": "boolean"},
+            "W3_open_now_count": {"type": "integer", "minimum": 0},
+            "W4_broken_refs_count": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "import_graph": {
+          "type": "object",
+          "required": ["total_edges", "max_in_degree", "hotpath_score_basis"],
+          "properties": {
+            "total_edges": {"type": "integer", "minimum": 0},
+            "max_in_degree": {"type": "integer", "minimum": 0},
+            "hotpath_score_basis": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        "instruction": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
