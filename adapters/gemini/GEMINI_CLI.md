@@ -1,26 +1,55 @@
 # Gemini CLI Adapter
 
-Gemini CLI can be used with ACG as an execution agent.
+Gemini CLI can be used with ACG in two modes:
 
-ACG should remain the external guidance, scope, verification, and promotion gate.
+1. **orientation mode** — Gemini reads the generated `.acg/` package and proposes a bounded reading/action plan;
+2. **execution mode** — Gemini edits code inside a declared task scope while ACG verifies externally.
+
+ACG remains the guidance, scope, verification, and promotion gate.
 
 ```txt
-Gemini CLI = executor
-ACG = structure + scope + evidence + gate
+Gemini CLI = agent
+ACG = structure + topology + scope + evidence + gate
 Git/CI = promotion control
 ```
 
-## Principle
+---
 
-Do not ask Gemini CLI to "use ACG by itself".
+## Orientation mode: recommended first step
 
-Use Gemini CLI to edit code inside a declared task scope, then let ACG verify externally.
+Generate the ACG package:
 
-The agent can propose code. It is not the authority that the code is safe, complete, scoped, or promotable.
+```bash
+python scripts/acg-v04.py --source /path/to/project --out .acg
+```
+
+Fast mode:
+
+```bash
+python scripts/acg-v04.py --source /path/to/project --out .acg --skip-lexical-index
+```
+
+Then prompt Gemini:
+
+```txt
+Open .acg/ACG_MASTER.md first and follow it exactly.
+```
+
+Gemini should read only what `ACG_MASTER.md` allows, then return:
+
+```txt
+ACG-UNDERSTOOD: structure-scout
+SCOPE: files actually read
+RISKS: key risks before deeper processing
+QUESTIONS: objective approvals needed
+NEXT: bounded Phase 2 plan
+```
+
+Do not approve open-ended exploration. Approve only exact file lists.
 
 ---
 
-## Minimal smoke test
+## Execution mode: scoped code work
 
 ### 1. Create a branch
 
@@ -115,18 +144,6 @@ This is a good result. It means the gate works.
 
 ---
 
-## Recommended user workflow
-
-```txt
-1. User describes intent.
-2. ACG helps turn vague intent into task scope.
-3. Gemini CLI edits only inside the scope.
-4. ACG verifies externally.
-5. CI blocks promotion if evidence is missing or failed.
-```
-
----
-
 ## Safety notes
 
 - Do not give Gemini broad write scope for large refactors.
@@ -134,3 +151,4 @@ This is a good result. It means the gate works.
 - Do not trust text such as "tests passed" unless ACG/CI produced evidence.
 - Use one task per branch.
 - Prefer small, reversible changes.
+- Remember: `ACG_MASTER.md` is guidance, not a filesystem sandbox.
