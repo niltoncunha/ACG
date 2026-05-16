@@ -8,10 +8,17 @@ It exists because the first failure often happens before code is written: the us
 
 ACG turns vague human intent into scoped, verifiable AI work.
 
-It does not replace the developer, reviewer, or CI system. It guides the user and the AI into a safer operating path.
+It does not replace the developer, reviewer, or CI system. It gives the user and the AI a controlled path through a large codebase.
 
 ```txt
-vague request -> guided task contract -> structure scout -> scoped work -> external verify -> evidence gate
+vague request
+  -> guided task contract
+  -> full structural inventory
+  -> hotpath scoring
+  -> reading queues
+  -> scoped AI work
+  -> external verify
+  -> evidence gate
 ```
 
 ---
@@ -30,12 +37,33 @@ The workflow was wrong:
 
 - the user gave a broad mission;
 - the AI opened too much too early;
+- there was no full structural map;
 - there was no stable reading chain;
 - there was no scoped execution path;
 - verification depended too much on the AI's own report;
 - promotion had no hard evidence gate.
 
 ACG exists to reduce that failure mode.
+
+---
+
+## Core idea
+
+ACG does not solve large codebases by reading every file.
+
+ACG first builds a structural map of the whole codebase:
+
+```txt
+all files
+  -> folder families
+  -> hotpaths
+  -> terminal assets
+  -> human-only zones
+  -> reading queues
+  -> controlled phase packs
+```
+
+Then the AI reads only the right subset, in the right order, with explicit limits.
 
 ---
 
@@ -71,9 +99,21 @@ Map the repository structure first. Then propose a scoped plan for the auth modu
 
 ---
 
-## ACG has two layers
+## ACG has three layers
 
-### 1. Structure Scout
+### 1. Guided Task Contract
+
+Turns vague user intent into a minimal operating contract.
+
+It clarifies:
+
+- goal;
+- scope;
+- sensitive zones;
+- expected verification;
+- evidence required before promotion.
+
+### 2. Structure Scout
 
 The Scout runs before deep AI work.
 
@@ -81,22 +121,21 @@ It maps the repository or file bundle structurally before asking the model to in
 
 It produces:
 
-- automatic file inventory;
-- language/runtime detection;
-- control-file detection;
-- entrypoint detection;
-- reference graph;
-- hubs;
-- orphans;
-- broken references;
-- terminal assets to skip;
-- real attention queue;
-- phased reading plan;
-- execution brief for the AI.
+- full file inventory;
+- folder family classification;
+- hotpath score per file;
+- risk score per file;
+- strategy per file: `open_now`, `open_later`, `search_only`, `index_only`, `human_only`, `terminal_asset`, `ignore`;
+- `structure_map.md`;
+- `hotpaths.json`;
+- `reading_queues.json`;
+- `search_targets.md`;
+- `phase1_pack/`;
+- `execution_brief.md`.
 
-The goal is not to read every file. The goal is to decide what should be opened first, what should wait, and what should not be read at all.
+The goal is not to read every file. The goal is to understand the shape of the whole codebase before deciding what the AI should read.
 
-### 2. Enforcement Core
+### 3. Enforcement Core
 
 The enforcement core runs around the work.
 
@@ -127,22 +166,22 @@ It provides:
       [00] GUIDED TASK CONTRACT
               |
               v
-      [01] STRUCTURAL INVENTORY
+      [01] FULL FILE INVENTORY
               |
               v
-      [02] LANGUAGE + RUNTIME DETECTION
+      [02] FOLDER FAMILY CLASSIFICATION
               |
               v
-      [03] CONTROL FILES + ENTRYPOINTS
+      [03] HOTPATH + RISK SCORING
               |
               v
-      [04] REFERENCE GRAPH
+      [04] STRUCTURE MAP
               |
               v
-      [05] ATTENTION QUEUE
+      [05] READING QUEUES
               |
               v
-      [06] PHASED READING PLAN
+      [06] CONTROLLED PHASE PACKS
               |
               v
       [07] EXECUTION BRIEF FOR THE AI
@@ -157,67 +196,47 @@ It provides:
       [10] FAIL-CLOSED PROMOTION GATE
 
 +======================================================================+
-|  The AI does the work. ACG guides the request, gives structure,       |
+|  The AI does the work. ACG maps the codebase, guides the request,     |
 |  limits scope, requires evidence, and blocks unsafe promotion.         |
 +======================================================================+
 ```
 
 ---
 
-## Core thesis
+## Structure Scout v0.3
 
-ACG is not the process itself.
+Run:
 
-ACG is the guide rail that gives the user and the AI a stable path through the process.
+```bash
+python3 scripts/acg-scout.py --source /path/to/project --out .acg
+```
+
+On Windows:
+
+```powershell
+python scripts\acg-scout.py --source "E:\path\to\project" --out ".acg"
+```
+
+Generated output:
 
 ```txt
-without ACG:
-  vague request -> huge context -> scattered reasoning -> broken refactor
-
-with ACG:
-  guided task -> structure -> phased reading -> scoped work -> external gate
+.acg/
+  context_manifest.jsonl
+  structure_map.md
+  hotpaths.json
+  reading_queues.json
+  search_targets.md
+  execution_brief.md
+  phase1_pack/
 ```
 
-Natural language instructions are useful context. They are not enforcement.
+The primary artifact is:
 
 ```txt
-human intent       = raw input
-scout report       = structural map
-execution brief    = reading/acting path
-agent output       = proposal
-external verify    = evidence
-fail-closed gate   = promotion control
+.acg/structure_map.md
 ```
 
----
-
-## Structure Scout output
-
-The Scout emits a `scout_report` with fields such as:
-
-```json
-{
-  "system_profile": {},
-  "language_map": [],
-  "control_files": [],
-  "reference_graph": {},
-  "attention_queue": [],
-  "phased_reading_plan": [],
-  "execution_brief": {},
-  "readiness_score": 0.82,
-  "guardrail_mode": "silent"
-}
-```
-
-The most important outputs are:
-
-| Output | Purpose |
-|---|---|
-| `attention_queue` | What to open first, and why. |
-| `phased_reading_plan` | How to process the repo in safe phases. |
-| `execution_brief` | A compact handoff the AI can follow without losing the chain. |
-| `readiness_score` | Whether the structure is clear enough to proceed. |
-| `guardrail_mode` | Whether the AI can proceed silently or needs clarification. |
+The `phase1_pack/` is only a controlled reading subset derived from the full structural map. It is not the whole analysis.
 
 ---
 
@@ -234,34 +253,12 @@ The enforcement core keeps four hard rules:
 
 ---
 
-## Quick start
-
-Run the Scout example locally by opening:
-
-```txt
-examples/acg-structure-scout/index.html
-```
-
-Run enforcement locally:
-
-```bash
-python3 scripts/acg-enforce.py --config acg.yaml --mode all
-```
-
-Run the test suite:
-
-```bash
-python3 -m unittest discover -s tests -p 'test_*.py'
-node --check examples/acg-structure-scout/script.js
-```
-
----
-
 ## What ACG protects against
 
 - vague requests turning into uncontrolled AI work;
 - reading too many files too early;
 - losing the structural chain of a codebase;
+- treating a tiny sample as if it represented the whole codebase;
 - direct edits outside declared scope;
 - edits to forbidden paths;
 - agentic work on the default branch;
@@ -287,7 +284,7 @@ See [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 ACG does not make AI-generated code correct.
 
-ACG makes large-codebase AI work guided, structured, scoped, evidenced, and harder to promote when it goes wrong.
+ACG makes large-codebase AI work structurally mapped, guided, scoped, evidenced, and harder to promote when it goes wrong.
 
 ---
 
