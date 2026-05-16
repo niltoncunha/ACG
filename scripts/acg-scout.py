@@ -30,6 +30,8 @@ EXCLUDE_DIRS = {
     "dist", "build", "coverage", ".cache", ".pytest_cache", ".mypy_cache",
 }
 
+BINARY_OR_DATABASE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".pkl", ".pickle"}
+
 CRITICAL_NAME_WEIGHTS = {
     "agents.md": 42,
     "active-index.md": 40,
@@ -55,6 +57,7 @@ EXTENSION_WEIGHTS = {
     ".yaml": 18, ".yml": 18, ".toml": 16, ".json": 10,
     ".md": 8, ".sh": 12, ".ps1": 12, ".sql": -5,
     ".log": -30, ".csv": -20, ".jsonl": -15, ".lock": -25, ".map": -30,
+    ".sqlite": -60, ".sqlite3": -60, ".db": -60, ".db3": -60,
 }
 
 FAMILY_RULES = [
@@ -111,6 +114,8 @@ def should_skip(path: Path) -> bool:
 
 def classify_family(relative_path: str) -> tuple[str, str, list[str]]:
     low = relative_path.lower()
+    if Path(low).suffix in BINARY_OR_DATABASE_EXTENSIONS:
+        return "binary_or_database", "terminal", ["matched_family:binary_or_database"]
     for pattern, family, tier in FAMILY_RULES:
         if re.search(pattern, low):
             return family, tier, [f"matched_family:{family}"]
@@ -120,6 +125,8 @@ def classify_family(relative_path: str) -> tuple[str, str, list[str]]:
 def detect_role(relative_path: str, extension: str, family: str) -> tuple[str, list[str]]:
     low = relative_path.lower()
     name = Path(low).name
+    if extension in BINARY_OR_DATABASE_EXTENSIONS:
+        return "database_or_binary_asset", ["database_or_binary_extension"]
     if name in {"readme.md", "agents.md", "active-index.md"}:
         return "orientation", ["orientation_name"]
     if "blueprint" in name or "structure_map" in name or "environment_contract" in name:
@@ -167,7 +174,7 @@ def score_file(relative_path: str, size: int, extension: str, depth: int, family
     score += ext_weight
     if ext_weight:
         reasons.append(f"extension:{ext_weight:+d}")
-    if family in TERMINAL_FAMILIES:
+    if family in TERMINAL_FAMILIES or family == "binary_or_database":
         score -= 45
         reasons.append("terminal_family:-45")
     if family == "reference":
@@ -195,7 +202,7 @@ def risk_score(size: int, family: str, extension: str) -> int:
     risk = 0
     if family in HUMAN_ONLY_FAMILIES:
         risk += 80
-    if family in TERMINAL_FAMILIES:
+    if family in TERMINAL_FAMILIES or family == "binary_or_database":
         risk += 45
     if family == "reference":
         risk += 35
@@ -203,14 +210,16 @@ def risk_score(size: int, family: str, extension: str) -> int:
         risk += 40
     elif size > 500_000:
         risk += 30
-    if extension in {".env", ".sql", ".sqlite", ".sqlite3"}:
+    if extension in {".env", ".sql", ".sqlite", ".sqlite3", ".db", ".db3"}:
         risk += 50
     return max(0, min(100, risk))
 
 
-def strategy_for(family: str, size: int, score: int) -> tuple[str, bool, bool, bool]:
+def strategy_for(family: str, size: int, score: int, extension: str) -> tuple[str, bool, bool, bool]:
     if family in {"secrets", "migrations", "infra"}:
         return "human_only", False, False, True
+    if extension in BINARY_OR_DATABASE_EXTENSIONS or family == "binary_or_database":
+        return "terminal_asset", False, False, True
     if family == "generated":
         return "ignore", False, False, False
     if family in {"logs", "exports"}:
@@ -244,7 +253,7 @@ def scan(source: Path, limit: int) -> list[FileEntry]:
         role, role_reasons = detect_role(rel, ext, family)
         score, score_reasons = score_file(rel, stat.st_size, ext, depth, family, stat.st_mtime, now_ts)
         risk = risk_score(stat.st_size, family, ext)
-        strategy, open_ok, edit_ok, approval = strategy_for(family, stat.st_size, score)
+        strategy, open_ok, edit_ok, approval = strategy_for(family, stat.st_size, score, ext)
         entries.append(FileEntry(
             relative_path=rel,
             absolute_path=str(path.resolve()).replace("\\", "/"),
@@ -336,6 +345,14 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
         f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}",
         f"Total indexed files: {len(entries)}",
         "",
+        "## Companion Artifacts",
+        "",
+        "- Full manifest: `context_manifest.jsonl`",
+        "- Machine-readable queues: `reading_queues.json`",
+        "- Full search-only list: `search_targets.md`",
+        "- AI handoff: `execution_brief.md`",
+        "- Controlled initial files: `phase1_pack/`",
+        "",
         "## Cluster Overview",
         "",
         "| Family | Files | Avg Hotpath | Dominant Strategy |",
@@ -349,15 +366,17 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
     lines += ["", "## Phase 1 Reading Queue", ""]
     for item in queues.get("phase1", []):
         lines.append(f"- `{item['relative_path']}` — score {item['hotpath_score']}, {item['role']}")
-    lines += ["", "## Search-Only / Terminal Assets", ""]
+    lines += ["", "## Search-Only / Terminal Assets", "", "Summary only. See `search_targets.md` for the full list.", ""]
     for item in search_targets[:25]:
         lines.append(f"- `{item['relative_path']}` — {item['strategy']}, {item['size']} bytes")
     if len(search_targets) > 25:
-        lines.append(f"- ... {len(search_targets) - 25} more")
+        lines.append(f"- ... {len(search_targets) - 25} more. Full list: `search_targets.md`; machine-readable queue: `reading_queues.json`.")
     lines += ["", "## Human-Only Files", ""]
     if human_only:
         for item in human_only[:25]:
             lines.append(f"- `{item['relative_path']}` — {item['folder_family']}")
+        if len(human_only) > 25:
+            lines.append(f"- ... {len(human_only) - 25} more. Full list: `reading_queues.json` under `human_only`.")
     else:
         lines.append("- None detected.")
     lines += ["", "## Rule", "", "Do not ask an AI to read the whole folder. Use the reading queues and search targets."]
@@ -396,6 +415,13 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
         "Do not edit files. This is orientation only.",
         "Do not claim final understanding. Return uncertainties explicitly.",
         "",
+        "## Required artifacts to inspect first",
+        "",
+        "- `structure_map.md`",
+        "- `reading_queues.json`",
+        "- `search_targets.md`",
+        "- `phase1_pack/`",
+        "",
         "## You may read now",
     ]
     for item in phase1:
@@ -403,9 +429,13 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
     lines += ["", "## You may request later"]
     for item in phase2[:20]:
         lines.append(f"- `{item['relative_path']}`")
-    lines += ["", "## Search-only targets"]
+    if len(phase2) > 20:
+        lines.append(f"- ... {len(phase2) - 20} more. Full queue: `reading_queues.json` under `phase2`.")
+    lines += ["", "## Search-only targets", "", "Summary only. Do not infer that this is the full list; use `search_targets.md`.", ""]
     for item in search_targets[:20]:
         lines.append(f"- `{item['relative_path']}`")
+    if len(search_targets) > 20:
+        lines.append(f"- ... {len(search_targets) - 20} more. Full list: `search_targets.md`; machine-readable queue: `reading_queues.json` under `search_targets`.")
     lines += [
         "", "## Required confirmation", "", "Reply with:", "",
         "```txt", "ACG-UNDERSTOOD: structure-scout", "SCOPE: files you actually read",
