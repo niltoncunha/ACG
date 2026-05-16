@@ -3,7 +3,7 @@
 
 Build a structural map of a large folder before giving it to an AI agent.
 
-Output layout:
+Generated layout:
 
 .acg/
   ACG_MASTER.md
@@ -38,16 +38,13 @@ EXCLUDE_DIRS = {
 }
 
 BINARY_OR_DATABASE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".pkl", ".pickle"}
-TEXT_EXTENSIONS = {".md", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".sh", ".ps1"}
-
+TEXT_EXTENSIONS = {
+    ".md", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".toml",
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".sh", ".ps1",
+}
 LEGACY_ROOT_ARTIFACTS = {
-    "context_manifest.jsonl",
-    "structure_map.md",
-    "hotpaths.json",
-    "reading_queues.json",
-    "search_targets.md",
-    "execution_brief.md",
-    "next_prompt.md",
+    "context_manifest.jsonl", "structure_map.md", "hotpaths.json", "reading_queues.json",
+    "search_targets.md", "execution_brief.md", "next_prompt.md",
 }
 
 CRITICAL_NAME_WEIGHTS = {
@@ -186,7 +183,7 @@ def detect_role(relative_path: str, extension: str, family: str) -> tuple[str, l
 
 def score_file(relative_path: str, size: int, extension: str, depth: int, family: str, modified_ts: float, now_ts: float) -> tuple[int, list[str]]:
     score = 50
-    reasons = []
+    reasons: list[str] = []
     name = Path(relative_path.lower()).name
     for key, boost in CRITICAL_NAME_WEIGHTS.items():
         if key in name:
@@ -281,24 +278,24 @@ def strategy_for(family: str, size: int, score: int, extension: str) -> tuple[st
 
 def scan(source: Path, limit: int) -> list[FileEntry]:
     now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
-    entries = []
+    entries: list[FileEntry] = []
     for path in source.rglob("*"):
         if should_skip(path) or not path.is_file():
             continue
         rel = path.relative_to(source).as_posix()
-        stat = path.stat()
+        stat_result = path.stat()
         ext = path.suffix.lower()
         depth = len(Path(rel).parts) - 1
         family, tier, family_reasons = classify_family(rel)
         role, role_reasons = detect_role(rel, ext, family)
-        score, score_reasons = score_file(rel, stat.st_size, ext, depth, family, stat.st_mtime, now_ts)
-        risk = risk_score(stat.st_size, family, ext)
-        strategy, open_ok, edit_ok, approval = strategy_for(family, stat.st_size, score, ext)
+        score, score_reasons = score_file(rel, stat_result.st_size, ext, depth, family, stat_result.st_mtime, now_ts)
+        risk = risk_score(stat_result.st_size, family, ext)
+        strategy, open_ok, edit_ok, approval = strategy_for(family, stat_result.st_size, score, ext)
         entries.append(FileEntry(
             relative_path=rel,
             absolute_path=str(path.resolve()).replace("\\", "/"),
-            size=stat.st_size,
-            modified=utc(stat.st_mtime),
+            size=stat_result.st_size,
+            modified=utc(stat_result.st_mtime),
             extension=ext,
             depth=depth,
             folder_family=family,
@@ -371,7 +368,6 @@ def build_queues(entries: list[FileEntry], phase1_max_files: int, phase1_max_byt
             continue
         phase1.append(entry)
         total += entry.size
-
     phase1_paths = {e.relative_path for e in phase1}
     phase2_candidates = [e for e in hot if e.relative_path not in phase1_paths and is_safe_read_candidate(e)]
     phase2 = phase2_candidates[:phase2_max_files]
@@ -407,7 +403,7 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
         "- Full manifest: `context_manifest.jsonl`",
         "- Machine-readable queues: `reading_queues.json`",
         "- Full search-only list: `search_targets.md`",
-        "- Next prompt: `next_prompt.md`",
+        "- Continuation protocol: `next_prompt.md`",
         "- AI handoff: `execution_brief.md`",
         "- Controlled initial files: `../phase1_pack/`",
         "",
@@ -470,10 +466,11 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
         "You are operating under ACG Structure Scout.",
         "",
         "Read `../ACG_MASTER.md` first. It is the only root-level instruction file.",
+        "Read `next_prompt.md` before Phase 1. It is your continuation protocol after Phase 1.",
         "Do not read the entire source folder. Read only the Phase 1 pack first.",
         "Do not edit files. This is orientation only.",
         "Do not claim final understanding. Return uncertainties explicitly.",
-        "After Phase 1, use `next_prompt.md`; do not rely on the human knowing what to ask next.",
+        "The human should not need to copy/paste a second prompt. You must apply `next_prompt.md` automatically after Phase 1.",
         "",
         "## Required artifacts to inspect first",
         "",
@@ -499,9 +496,10 @@ def write_execution_brief(path: Path, queues: dict[str, object]) -> None:
     if len(search_targets) > 20:
         lines.append(f"- ... {len(search_targets) - 20} more. Full list: `search_targets.md`; machine-readable queue: `reading_queues.json` under `search_targets`.")
     lines += [
-        "", "## Required confirmation", "", "Reply with:", "",
+        "", "## Required Phase 1 Output", "", "After Phase 1, reply with:", "",
         "```txt", "ACG-UNDERSTOOD: structure-scout", "SCOPE: files you actually read",
-        "RISKS: key risks before deeper processing", "QUESTIONS: what needs human approval", "```",
+        "RISKS: key risks before deeper processing", "QUESTIONS: objective questions or approval requests only",
+        "NEXT: Phase 2 plan or up to 3 clarification questions, following next_prompt.md", "```",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -510,26 +508,20 @@ def write_next_prompt(path: Path, queues: dict[str, object]) -> None:
     phase2 = queues.get("phase2", [])
     approval_required = queues.get("approval_required", [])
     lines = [
-        "# ACG Next Prompt",
+        "# ACG Continuation Protocol",
         "",
-        "Use this after the AI finishes Phase 1. The human should not need to invent the next question.",
+        "This file is not a human copy/paste prompt.",
+        "The AI must read this file before Phase 1 and apply it automatically after Phase 1.",
         "",
-        "## Copy/paste to the AI",
-        "",
-        "```txt",
-        "ACG Phase 1 accepted.",
+        "## After Phase 1",
         "",
         "Do not open new files yet.",
         "Do not read the original source folder directly.",
         "Do not open search-only, terminal, legacy, log, export, database or binary files.",
         "Do not assume the user's final objective if it was not provided.",
         "",
-        "Your next task is to produce a bounded Phase 2 plan using only:",
-        "- .acg/artifacts/reading_queues.json",
-        "- .acg/artifacts/structure_map.md",
-        "- .acg/artifacts/search_targets.md",
+        "Classify the user's intent into one of these modes:",
         "",
-        "First classify the user's intent into one of these modes:",
         "1. MAP_ONLY - understand/organize the codebase without edits",
         "2. REFACTOR - change structure while preserving behavior",
         "3. BUGFIX - investigate a concrete failure",
@@ -540,17 +532,17 @@ def write_next_prompt(path: Path, queues: dict[str, object]) -> None:
         "8. UNKNOWN - objective not clear enough",
         "",
         "If the mode is UNKNOWN, ask at most 3 concrete questions and stop.",
-        "If the mode is known, propose a Phase 2 Reading Plan from the official phase2 queue only.",
+        "If the mode is known, produce a bounded Phase 2 Reading Plan from the official phase2 queue only.",
         "",
-        "Return only:",
-        "## ACG Phase 2 Reading Plan",
-        "1. Detected mode",
-        "2. Exact files requested for Phase 2",
-        "3. Why each file is needed",
-        "4. What question each file should answer",
-        "5. Files explicitly excluded",
-        "6. Approval-required exceptions, if any",
-        "7. Stop and wait for human approval",
+        "## Required NEXT block",
+        "",
+        "Return this as part of the Phase 1 response:",
+        "",
+        "```txt",
+        "NEXT:",
+        "Detected mode: <MAP_ONLY|REFACTOR|BUGFIX|FEATURE|DOCS|TESTS|SECURITY|UNKNOWN>",
+        "If UNKNOWN: up to 3 concrete questions.",
+        "If known: bounded Phase 2 Reading Plan with exact files, reason, question answered, exclusions, approval-required exceptions, and wait for approval.",
         "```",
         "",
         "## Current safe Phase 2 candidates",
@@ -560,7 +552,7 @@ def write_next_prompt(path: Path, queues: dict[str, object]) -> None:
         for item in phase2:
             lines.append(f"- `{item['relative_path']}` - {item['role']}, score {item['hotpath_score']}")
     else:
-        lines.append("- None generated. The AI must ask for objective clarification or request a human-approved exception.")
+        lines.append("- None generated. Ask for objective clarification or request a human-approved exception.")
     lines += ["", "## Approval-required exceptions", ""]
     if approval_required:
         for item in approval_required[:30]:
@@ -618,24 +610,19 @@ def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dic
         "",
         "## What the human does",
         "",
-        "The human does not need to invent custom follow-up prompts.",
-        "",
-        "Use this order:",
-        "",
-        "1. Give the AI this file.",
-        "2. Ask it to follow `artifacts/execution_brief.md`.",
-        "3. After Phase 1, use `artifacts/next_prompt.md`.",
-        "4. Approve or reject the proposed Phase 2 plan.",
+        "The human does not need to invent follow-up prompts or copy/paste `next_prompt.md`.",
+        "The human gives the AI this file, then approves, rejects, or clarifies the AI's bounded NEXT block.",
         "",
         "## Read Order for AI",
         "",
         "1. Read this file: `ACG_MASTER.md`.",
-        "2. Read `artifacts/structure_map.md` for the structural overview.",
-        "3. Read `artifacts/reading_queues.json` for the complete operational queues.",
-        "4. Read `artifacts/search_targets.md` to understand what must not be opened directly.",
-        "5. Read `artifacts/next_prompt.md` so you know how to continue after Phase 1.",
-        "6. Read only files copied inside `phase1_pack/`.",
-        "7. Stop and return the required confirmation before asking for Phase 2.",
+        "2. Read `artifacts/execution_brief.md`.",
+        "3. Read `artifacts/next_prompt.md` before Phase 1; it is the automatic continuation protocol.",
+        "4. Read `artifacts/structure_map.md` for the structural overview.",
+        "5. Read `artifacts/reading_queues.json` for complete operational queues.",
+        "6. Read `artifacts/search_targets.md` to understand what must not be opened directly.",
+        "7. Read only files copied inside `phase1_pack/`.",
+        "8. Return the Phase 1 confirmation plus NEXT block. Do not wait for the human to paste another prompt.",
         "",
         "## Do Not Do",
         "",
@@ -646,18 +633,19 @@ def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dic
         "- Do not claim final understanding from Phase 1 alone.",
         "- Do not ask the human vague questions such as 'what next?' Use `next_prompt.md`.",
         "",
-        "## Required AI Confirmation",
+        "## Required AI Output",
         "",
         "```txt",
         "ACG-UNDERSTOOD: structure-scout",
         "SCOPE: files you actually read",
         "RISKS: key risks before deeper processing",
         "QUESTIONS: objective questions or approval requests only",
+        "NEXT: apply artifacts/next_prompt.md automatically",
         "```",
         "",
         "## Human Next Step",
         "",
-        "After the AI returns the confirmation, open `artifacts/next_prompt.md` and paste the Copy/paste block to the AI.",
+        "Approve, reject, or clarify the AI's NEXT block. Do not design a new prompt manually.",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -707,7 +695,7 @@ def main() -> int:
     print(f"Artifacts folder: {artifacts}")
     print(f"Structure map: {artifacts / 'structure_map.md'}")
     print(f"Reading queues: {artifacts / 'reading_queues.json'}")
-    print(f"Next prompt: {artifacts / 'next_prompt.md'}")
+    print(f"Next protocol: {artifacts / 'next_prompt.md'}")
     print(f"Phase 1 pack: {out / 'phase1_pack'}")
     print(f"Execution brief: {artifacts / 'execution_brief.md'}")
     return 0
