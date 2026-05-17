@@ -6,15 +6,18 @@ Stable package generator used by scripts/acg-v04.py.
 Keeps the public CLI:
   python scripts/acg-scout.py --source /path/to/project --out .acg
 
-Generates the .acg/ package while using import-graph topology for source files.
-Designed for large repositories: excludes dependency/runtime noise by default and
-keeps scout_report.json compact instead of duplicating the full manifest.
+Adds ownership-aware topology:
+- infer project-owned roots from repository markers;
+- classify external/runtime/dependency/cache files;
+- build the main import graph only from PROJECT_OWNED source files;
+- cap external hotpath scores so tool runtimes cannot outrank the target codebase.
 """
 from __future__ import annotations
 
 import argparse
 import ast
 import datetime as dt
+import fnmatch
 import json
 import os
 import re
@@ -28,30 +31,47 @@ from typing import Iterable
 VERSION = "0.4-beta"
 MAX_IMPORT_PARSE_BYTES = 350_000
 
-EXCLUDE_DIR_NAMES = {
-    ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "env",
-    "dist", "build", "coverage", ".cache", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    ".pnpm", ".yarn", ".npm", "bower_components", "vendor", "vendors", "third_party",
-    "site-packages", "dist-packages", "__pypackages__", "target", ".gradle", ".idea",
-}
-
-EXCLUDE_PATH_PATTERNS = [
-    re.compile(r"(^|/)opt/codex/runtimes(/|$)", re.I),
-    re.compile(r"(^|/)dependencies/python(/|$)", re.I),
-    re.compile(r"(^|/)site-packages(/|$)", re.I),
-    re.compile(r"(^|/)dist-packages(/|$)", re.I),
-    re.compile(r"(^|/)[^/]+\.dist-info(/|$)", re.I),
-    re.compile(r"(^|/)[^/]+\.egg-info(/|$)", re.I),
-    re.compile(r"(^|/)node_modules(/|$)", re.I),
-    re.compile(r"(^|/)\.pnpm(/|$)", re.I),
-]
-
-BINARY_OR_DATABASE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".pkl", ".pickle"}
 SOURCE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs"}
 TEXT_EXTENSIONS = {
     ".md", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".toml",
     ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".sh", ".ps1",
 }
+BINARY_OR_DATABASE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".pkl", ".pickle"}
+
+PRUNE_DIR_NAMES = {
+    ".git", ".hg", ".svn", "__pycache__", "node_modules", ".pnpm", ".yarn", ".npm",
+    "bower_components", ".venv", "venv", "env", "__pypackages__", "site-packages",
+    "dist-packages", "target", ".gradle", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+}
+ALLOWED_HIDDEN_DIRS = {".github"}
+
+DEPENDENCY_MARKERS = {
+    "node_modules", ".pnpm", "bower_components", "site-packages", "dist-packages",
+    "__pypackages__", "vendor", "vendors", "third_party", ".venv", "venv", "env",
+}
+TOOL_RUNTIME_MARKERS = {"runtimes", "runtime-cache", "toolchains", "plugins", "extensions", "cache", ".cache"}
+GENERATED_MARKERS = {"dist", "build", "coverage", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "generated", ".generated", "out", "outputs"}
+REFERENCE_MARKERS = {"refs", "reference", "references", "samples", "fixtures", "ssot"}
+
+PROJECT_MARKER_FILES = {
+    "AGENTS.md", "README.md", "acg.yaml", "acg.json", "package.json", "pyproject.toml",
+    "Cargo.toml", "go.mod", "Makefile", "requirements.txt", "setup.py", "setup.cfg",
+    "tsconfig.json", "pnpm-workspace.yaml", "WORKSPACE",
+}
+PROJECT_MARKER_DIRS = {
+    "src", "lib", "app", "apps", "packages", "pkg", "cmd", "api", "server",
+    "tests", "test", "docs", "workspace", "agent_files", "00_core", "01_canon",
+    "02_memory", "03_profiles", "04_eval", "06_runtime_guides",
+}
+CONTROL_FILE_NAMES = {
+    "acg.yaml", "acg.json", "package.json", "pyproject.toml", "cargo.toml", "go.mod",
+    "makefile", "dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    "requirements.txt", "setup.py", "setup.cfg",
+}
+ENTRYPOINT_RE = re.compile(
+    r"(^|[\\/])(main\.py|main\.go|main\.rs|index\.[jt]sx?|app\.py|server\.py|__main__\.py|cmd[\\/]main\.go|src[\\/]main\.rs|bin[\\/]main\.rs)$",
+    re.I,
+)
 
 LEGACY_ROOT_ARTIFACTS = {
     "context_manifest.jsonl", "structure_map.md", "hotpaths.json", "reading_queues.json",
@@ -66,13 +86,11 @@ CRITICAL_NAME_WEIGHTS = {
     "acg.yaml": 38, "package.json": 30, "pyproject.toml": 30, "go.mod": 30,
     "cargo.toml": 30, "tsconfig.json": 26, "requirements.txt": 24,
 }
-
 FAMILY_HOTPATH = {
     "core": 20, "canon": 18, "runtime": 16, "tests": 10, "docs": 8, "guides": 8,
     "evaluation": 8, "reference": 5, "memory": 4, "legacy": 2, "unknown": 6,
     "generated": 0, "logs": 0, "exports": 0, "secrets": 0, "infra": 0, "migrations": 0,
 }
-
 FAMILY_RULES = [
     (r"(^|/)90_legacy(/|$)|(^|/)legacy(/|$)|(^|/)archive|(^|/)_old(/|$)|(^|/)old(/|$)", "legacy", "terminal"),
     (r"(^|/)logs?(/|$)|\.log$", "logs", "terminal"),
@@ -91,16 +109,22 @@ FAMILY_RULES = [
     (r"(^|/)06_runtime|(^|/)guides?(/|$)", "guides", "standard"),
     (r"(^|/)eval(/|$)|(^|/)lab(/|$)|benchmark", "evaluation", "later"),
 ]
-
 TERMINAL_FAMILIES = {"legacy", "logs", "exports", "generated"}
 HUMAN_ONLY_FAMILIES = {"secrets", "migrations", "infra"}
-CONTROL_FILE_NAMES = {"acg.yaml", "acg.json", "package.json", "pyproject.toml", "cargo.toml", "go.mod", "makefile", "dockerfile", "docker-compose.yml", "docker-compose.yaml", "requirements.txt", "setup.py", "setup.cfg"}
-ENTRYPOINT_RE = re.compile(r"(^|[\\/])(main\.py|main\.go|main\.rs|index\.[jt]sx?|app\.py|server\.py|__main__\.py|cmd[\\/]main\.go|src[\\/]main\.rs|bin[\\/]main\.rs)$", re.I)
+
 JS_RE = re.compile(r"(?:import\s+.*?\s+from\s+|require\s*\(\s*|import\s*\(\s*)['\"](\.{1,2}/[^'\"]+)['\"]", re.MULTILINE)
 RUST_RE = re.compile(r"^\s*use\s+([\w:]+)", re.MULTILINE)
 GO_BLOCK_RE = re.compile(r"import\s*\((.*?)\)", re.DOTALL)
 GO_SINGLE_RE = re.compile(r'import\s+"([^"]+)"')
 GO_ITEM_RE = re.compile(r'"([^"]+)"')
+
+
+@dataclass
+class Ownership:
+    ownership_class: str
+    ownership_score: float
+    included_in_import_graph: bool
+    reason: str
 
 
 @dataclass
@@ -115,6 +139,9 @@ class FileEntry:
     folder_family: str
     family_tier: str
     role: str
+    ownership_class: str
+    ownership_score: float
+    included_in_import_graph: bool
     hotpath_score: int
     risk_score: int
     in_degree: int
@@ -134,16 +161,68 @@ def utc(ts: float) -> str:
 
 
 def normalize_rel(path: str) -> str:
-    return path.replace("\\", "/")
+    return path.replace("\\", "/").strip().lstrip("./")
 
 
-def path_is_excluded(rel: str) -> bool:
+def parts(rel: str) -> list[str]:
+    return [p for p in normalize_rel(rel).split("/") if p and p != "."]
+
+
+def load_acgignore(source: Path) -> list[str]:
+    path = source / ".acgignore"
+    if not path.is_file():
+        return []
+    patterns: list[str] = []
+    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line)
+    return patterns
+
+
+def matches_any_glob(rel: str, patterns: list[str]) -> bool:
     rel = normalize_rel(rel)
-    return any(pattern.search(rel) for pattern in EXCLUDE_PATH_PATTERNS)
+    return any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch("/" + rel, p) for p in patterns)
 
 
-def should_skip_dir(rel_dir: str, name: str) -> bool:
-    return name in EXCLUDE_DIR_NAMES or path_is_excluded(rel_dir)
+def is_dependency_path(rel: str) -> bool:
+    ps = {p.lower() for p in parts(rel)}
+    return bool(ps & DEPENDENCY_MARKERS) or any(p.endswith(".dist-info") or p.endswith(".egg-info") for p in ps)
+
+
+def is_generated_path(rel: str) -> bool:
+    return bool({p.lower() for p in parts(rel)} & GENERATED_MARKERS)
+
+
+def is_reference_path(rel: str) -> bool:
+    return bool({p.lower() for p in parts(rel)} & REFERENCE_MARKERS)
+
+
+def is_tool_runtime_path(rel: str) -> bool:
+    ps = parts(rel)
+    low = [p.lower() for p in ps]
+    if any(p.startswith(".") and p not in ALLOWED_HIDDEN_DIRS for p in ps):
+        return True
+    if set(low) & TOOL_RUNTIME_MARKERS:
+        if {"plugins", "repos"} <= set(low) or "runtimes" in low or "toolchains" in low or ".cache" in low:
+            return True
+    if len(low) >= 2 and low[0] in {"root", "home", "tmp", "var"} and (low[1].startswith(".") or "runtimes" in low):
+        return True
+    return False
+
+
+def should_prune_dir(rel_dir: str, name: str, ignore_patterns: list[str]) -> bool:
+    rel = normalize_rel(rel_dir)
+    lname = name.lower()
+    if matches_any_glob(rel, ignore_patterns):
+        return True
+    if lname in PRUNE_DIR_NAMES:
+        return True
+    if name.startswith(".") and name not in ALLOWED_HIDDEN_DIRS:
+        return True
+    if lname.endswith(".dist-info") or lname.endswith(".egg-info"):
+        return True
+    return False
 
 
 def read_text_limited(path: Path, max_bytes: int = MAX_IMPORT_PARSE_BYTES) -> str:
@@ -168,6 +247,86 @@ def safe_rmtree(path: Path) -> None:
         shutil.rmtree(path, onerror=remove_readonly)
     except PermissionError as exc:
         raise RuntimeError("ACG could not replace phase1_pack. Close programs using .acg/phase1_pack, delete it manually, and rerun.") from exc
+
+
+def collect_paths(source: Path, limit: int, ignore_patterns: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(source):
+        dir_path = Path(dirpath)
+        new_dirs: list[str] = []
+        for d in dirnames:
+            try:
+                rel_d = (dir_path / d).relative_to(source).as_posix()
+            except ValueError:
+                continue
+            if not should_prune_dir(rel_d, d, ignore_patterns):
+                new_dirs.append(d)
+        dirnames[:] = new_dirs
+        for filename in filenames:
+            path = dir_path / filename
+            try:
+                rel = path.relative_to(source).as_posix()
+            except ValueError:
+                continue
+            if matches_any_glob(rel, ignore_patterns) or not path.is_file():
+                continue
+            paths.append(path)
+            if len(paths) >= limit:
+                return paths
+    return paths
+
+
+def infer_project_roots(source: Path, paths: list[Path]) -> list[str]:
+    scores: dict[str, int] = defaultdict(int)
+    for p in paths:
+        try:
+            rel = p.relative_to(source).as_posix()
+        except ValueError:
+            continue
+        if is_dependency_path(rel) or is_tool_runtime_path(rel) or is_generated_path(rel):
+            continue
+        pp = p.parent.relative_to(source).as_posix() if p.parent != source else "."
+        name = p.name
+        if name in PROJECT_MARKER_FILES:
+            scores[pp] += 6 if name in {"AGENTS.md", "README.md"} else 5
+        for part in parts(rel)[:-1]:
+            if part in PROJECT_MARKER_DIRS:
+                prefix = rel.split(part, 1)[0].rstrip("/")
+                scores[prefix or "."] += 3
+        if ENTRYPOINT_RE.search(rel):
+            scores[pp] += 5
+    if not scores:
+        return ["."]
+    roots = [r for r, s in scores.items() if s >= 5] or [max(scores.items(), key=lambda kv: kv[1])[0]]
+    roots = sorted(set(roots), key=lambda r: (len(parts(r)), r))
+    kept: list[str] = []
+    for r in roots:
+        if not any(r == k or normalize_rel(r).startswith(normalize_rel(k).rstrip("/") + "/") for k in kept):
+            kept.append(r)
+    return kept or ["."]
+
+
+def under_project_root(rel: str, project_roots: list[str]) -> bool:
+    rel = normalize_rel(rel)
+    for root in project_roots:
+        root = normalize_rel(root)
+        if root == "." or rel == root or rel.startswith(root.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def classify_ownership(rel: str, project_roots: list[str]) -> Ownership:
+    if is_dependency_path(rel):
+        return Ownership("VENDORED_DEPENDENCY", 0.05, False, "dependency marker")
+    if is_tool_runtime_path(rel):
+        return Ownership("TOOL_RUNTIME", 0.05, False, "tool/runtime marker")
+    if is_generated_path(rel):
+        return Ownership("GENERATED_CACHE", 0.10, False, "generated/cache marker")
+    if is_reference_path(rel):
+        return Ownership("REFERENCE_ASSET", 0.35, False, "reference asset marker")
+    if under_project_root(rel, project_roots):
+        return Ownership("PROJECT_OWNED", 1.0, True, "under inferred project root")
+    return Ownership("UNKNOWN_EXTERNAL", 0.25, False, "outside inferred project roots")
 
 
 def extract_python_imports(path: Path) -> list[str]:
@@ -205,32 +364,15 @@ def extract_imports(path: Path) -> list[str]:
     return []
 
 
-def collect_paths(source: Path, limit: int) -> list[Path]:
-    paths: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(source):
-        dir_path = Path(dirpath)
-        rel_dir = "." if dir_path == source else dir_path.relative_to(source).as_posix()
-        dirnames[:] = [d for d in dirnames if not should_skip_dir((dir_path / d).relative_to(source).as_posix(), d)]
-        for filename in filenames:
-            path = dir_path / filename
-            try:
-                rel = path.relative_to(source).as_posix()
-            except ValueError:
-                continue
-            if path_is_excluded(rel) or not path.is_file():
-                continue
-            paths.append(path)
-            if len(paths) >= limit:
-                return paths
-    return paths
-
-
-def build_file_index(paths: list[Path], source: Path) -> dict[str, str]:
+def build_file_index(paths: list[Path], source: Path, ownership: dict[str, Ownership]) -> dict[str, str]:
     index: dict[str, str] = {}
     for path in paths:
-        if path.suffix.lower() not in SOURCE_EXTENSIONS:
-            continue
         rel = path.relative_to(source).as_posix()
+        own = ownership.get(rel)
+        if not own or not own.included_in_import_graph:
+            continue
+        if path.suffix.lower() not in SOURCE_EXTENSIONS or path.stat().st_size > MAX_IMPORT_PARSE_BYTES:
+            continue
         stem_key = path.with_suffix("").relative_to(source).as_posix()
         index[rel] = rel
         index[stem_key] = rel
@@ -245,7 +387,6 @@ def resolve_import(source: Path, from_file: str, raw_import: str, index: dict[st
     if raw_import in index:
         return index[raw_import]
     base_dir = (source / from_file).parent
-    variants: list[str]
     if raw_import.startswith("."):
         try:
             variants = [(base_dir / raw_import).resolve().relative_to(source.resolve()).as_posix()]
@@ -263,13 +404,14 @@ def resolve_import(source: Path, from_file: str, raw_import: str, index: dict[st
     return index.get(stem)
 
 
-def build_import_graph(paths: list[Path], source: Path) -> tuple[dict[str, list[str]], dict[str, int], dict[str, int]]:
-    source_paths = [p for p in paths if p.suffix.lower() in SOURCE_EXTENSIONS and p.stat().st_size <= MAX_IMPORT_PARSE_BYTES]
-    index = build_file_index(source_paths, source)
+def build_import_graph(paths: list[Path], source: Path, ownership: dict[str, Ownership]) -> tuple[dict[str, list[str]], dict[str, int], dict[str, int]]:
+    index = build_file_index(paths, source, ownership)
     edges: dict[str, list[str]] = {}
     reverse: dict[str, set[str]] = defaultdict(set)
-    for path in source_paths:
-        rel = path.relative_to(source).as_posix()
+    rel_to_path = {p.relative_to(source).as_posix(): p for p in paths}
+    for rel, path in rel_to_path.items():
+        if rel not in index:
+            continue
         targets: set[str] = set()
         for raw in extract_imports(path):
             target = resolve_import(source, rel, raw, index)
@@ -356,17 +498,25 @@ def heuristic_score(relative_path: str, size: int, extension: str, depth: int, f
     return max(0, min(100, score)), reasons
 
 
-def score_file(relative_path: str, size: int, extension: str, depth: int, family: str, in_degree: int, max_in_degree: int) -> tuple[int, int, list[str]]:
-    topology = int(60 * (in_degree / max(max_in_degree, 1))) if extension in SOURCE_EXTENSIONS else 0
+def score_file(relative_path: str, size: int, extension: str, depth: int, family: str, in_degree: int, max_in_degree: int, own: Ownership) -> tuple[int, int, list[str]]:
+    topology = int(60 * (in_degree / max(max_in_degree, 1))) if own.included_in_import_graph and extension in SOURCE_EXTENSIONS else 0
+    if own.ownership_class != "PROJECT_OWNED":
+        base = 20 if own.ownership_class in {"UNKNOWN_EXTERNAL", "REFERENCE_ASSET"} else 12
+        return base, 0, [f"ownership_cap:{own.ownership_class}", own.reason]
     if extension in SOURCE_EXTENSIONS:
         score = min(100, topology + size_component(size) + FAMILY_HOTPATH.get(family, 6))
-        return score, topology, [f"topology_score:+{topology}", f"size_component:+{size_component(size)}", f"family_component:+{FAMILY_HOTPATH.get(family, 6)}"]
+        return score, topology, [f"topology_score:+{topology}", f"size_component:+{size_component(size)}", f"family_component:+{FAMILY_HOTPATH.get(family, 6)}", own.reason]
     heuristic, reasons = heuristic_score(relative_path, size, extension, depth, family)
+    reasons.append(own.reason)
     return heuristic, topology, reasons
 
 
-def risk_score(size: int, family: str, extension: str, relative_path: str) -> int:
+def risk_score(size: int, family: str, extension: str, relative_path: str, own: Ownership) -> int:
     risk = 0
+    if own.ownership_class in {"VENDORED_DEPENDENCY", "TOOL_RUNTIME", "GENERATED_CACHE"}:
+        risk += 35
+    if own.ownership_class == "UNKNOWN_EXTERNAL":
+        risk += 20
     if family in HUMAN_ONLY_FAMILIES:
         risk += 80
     if family in TERMINAL_FAMILIES or family == "binary_or_database":
@@ -384,7 +534,11 @@ def risk_score(size: int, family: str, extension: str, relative_path: str) -> in
     return max(0, min(100, risk))
 
 
-def strategy_for(family: str, size: int, score: int, extension: str, risk: int) -> tuple[str, bool, bool, bool]:
+def strategy_for(family: str, size: int, score: int, extension: str, risk: int, own: Ownership) -> tuple[str, bool, bool, bool]:
+    if own.ownership_class in {"VENDORED_DEPENDENCY", "TOOL_RUNTIME", "GENERATED_CACHE"}:
+        return "terminal_asset", False, False, True
+    if own.ownership_class in {"REFERENCE_ASSET", "UNKNOWN_EXTERNAL"}:
+        return "search_only", False, False, True
     if family in HUMAN_ONLY_FAMILIES or risk >= 60:
         return "human_only", False, False, True
     if extension in BINARY_OR_DATABASE_EXTENSIONS or family == "binary_or_database":
@@ -409,8 +563,11 @@ def strategy_for(family: str, size: int, score: int, extension: str, risk: int) 
 
 
 def scan(source: Path, limit: int) -> tuple[list[FileEntry], dict[str, object]]:
-    paths = collect_paths(source, limit)
-    edges, indegree, outdegree = build_import_graph(paths, source)
+    ignore_patterns = load_acgignore(source)
+    paths = collect_paths(source, limit, ignore_patterns)
+    project_roots = infer_project_roots(source, paths)
+    ownership = {p.relative_to(source).as_posix(): classify_ownership(p.relative_to(source).as_posix(), project_roots) for p in paths}
+    edges, indegree, outdegree = build_import_graph(paths, source, ownership)
     max_in_degree = max(indegree.values(), default=0)
     entries: list[FileEntry] = []
     has_entrypoint = False
@@ -420,33 +577,36 @@ def scan(source: Path, limit: int) -> tuple[list[FileEntry], dict[str, object]]:
         st = path.stat()
         ext = path.suffix.lower()
         depth = len(Path(rel).parts) - 1
+        own = ownership[rel]
         family, tier, family_reasons = classify_family(rel)
         role, role_reasons = detect_role(rel, ext, family)
         in_deg = int(indegree.get(rel, 0))
         out_deg = int(outdegree.get(rel, 0))
-        score, topology, score_reasons = score_file(rel, st.st_size, ext, depth, family, in_deg, max_in_degree)
-        risk = risk_score(st.st_size, family, ext, rel)
-        strategy, open_ok, edit_ok, approval = strategy_for(family, st.st_size, score, ext, risk)
-        has_control = has_control or path.name.lower() in CONTROL_FILE_NAMES
-        has_entrypoint = has_entrypoint or bool(ENTRYPOINT_RE.search(rel))
-        entries.append(FileEntry(rel, str(path.resolve()).replace("\\", "/"), st.st_size, st.st_size, utc(st.st_mtime), ext, depth, family, tier, role, score, risk, in_deg, out_deg, topology, out_deg, strategy, open_ok, edit_ok, approval, False, family_reasons + role_reasons + score_reasons))
-    graph_stats = {"total_edges": sum(len(v) for v in edges.values()), "max_in_degree": max_in_degree, "nodes": len(edges), "has_entrypoint": has_entrypoint, "has_control_files": has_control, "hotpath_score_basis": "source_code: topology(60)+size(20)+family(20); non_code: structural heuristic"}
+        score, topology, score_reasons = score_file(rel, st.st_size, ext, depth, family, in_deg, max_in_degree, own)
+        risk = risk_score(st.st_size, family, ext, rel, own)
+        strategy, open_ok, edit_ok, approval = strategy_for(family, st.st_size, score, ext, risk, own)
+        if own.ownership_class == "PROJECT_OWNED":
+            has_control = has_control or path.name.lower() in CONTROL_FILE_NAMES
+            has_entrypoint = has_entrypoint or bool(ENTRYPOINT_RE.search(rel))
+        entries.append(FileEntry(rel, str(path.resolve()).replace("\\", "/"), st.st_size, st.st_size, utc(st.st_mtime), ext, depth, family, tier, role, own.ownership_class, own.ownership_score, own.included_in_import_graph and ext in SOURCE_EXTENSIONS and rel in indegree, score, risk, in_deg, out_deg, topology, out_deg, strategy, open_ok, edit_ok, approval, False, family_reasons + role_reasons + score_reasons))
+    graph_stats = {"total_edges": sum(len(v) for v in edges.values()), "max_in_degree": max_in_degree, "nodes": len(edges), "project_roots": project_roots, "has_entrypoint": has_entrypoint, "has_control_files": has_control, "hotpath_score_basis": "PROJECT_OWNED source_code: topology(60)+size(20)+family(20); external files capped"}
     return entries, graph_stats
 
 
 def sort_hot(entries: Iterable[FileEntry]) -> list[FileEntry]:
-    return sorted(entries, key=lambda e: (-e.hotpath_score, -e.in_degree, e.risk_score, e.depth, e.relative_path))
+    return sorted(entries, key=lambda e: (e.ownership_class != "PROJECT_OWNED", -e.hotpath_score, -e.in_degree, e.risk_score, e.depth, e.relative_path))
 
 
 def is_safe_read_candidate(entry: FileEntry) -> bool:
-    return entry.strategy in {"open_now", "open_later"} and not entry.requires_human_approval and entry.folder_family not in TERMINAL_FAMILIES and entry.folder_family not in HUMAN_ONLY_FAMILIES and entry.folder_family != "binary_or_database" and entry.extension in TEXT_EXTENSIONS
+    return entry.ownership_class == "PROJECT_OWNED" and entry.strategy in {"open_now", "open_later"} and not entry.requires_human_approval and entry.folder_family not in TERMINAL_FAMILIES and entry.folder_family not in HUMAN_ONLY_FAMILIES and entry.folder_family != "binary_or_database" and entry.extension in TEXT_EXTENSIONS
 
 
 def readiness_score(entries: list[FileEntry], graph_stats: dict[str, object]) -> float:
-    total = max(len(entries), 1)
+    project_entries = [e for e in entries if e.ownership_class == "PROJECT_OWNED"]
+    total = max(len(project_entries), 1)
     w1 = 0.30 if graph_stats.get("has_entrypoint") else 0.0
     w2 = 0.25 if graph_stats.get("has_control_files") else 0.0
-    open_now = sum(1 for entry in entries if entry.strategy == "open_now")
+    open_now = sum(1 for entry in project_entries if entry.strategy == "open_now")
     w3 = 0.25 * min((open_now / total) * 4.0, 1.0)
     w4 = 0.20
     score = w1 + w2 + w3 + w4
@@ -494,12 +654,12 @@ def build_queues(entries: list[FileEntry], phase1_max_files: int, phase1_max_byt
 
 
 def write_queue_markdown(path: Path, title: str, description: str, items: list[dict[str, object]]) -> None:
-    lines = [f"# {title}", "", description, "", "| # | File | Role | Family | Score | In | Risk | Strategy |", "|---:|---|---|---|---:|---:|---:|---|"]
+    lines = [f"# {title}", "", description, "", "| # | File | Owner | Role | Family | Score | In | Risk | Strategy |", "|---:|---|---|---|---|---:|---:|---:|---|"]
     if not items:
-        lines.append("| - | None | - | - | - | - | - | - |")
+        lines.append("| - | None | - | - | - | - | - | - | - |")
     else:
         for i, item in enumerate(items, 1):
-            lines.append(f"| {i} | `{item['relative_path']}` | {item['role']} | {item['folder_family']} | {item['hotpath_score']} | {item.get('in_degree', 0)} | {item['risk_score']} | {item['strategy']} |")
+            lines.append(f"| {i} | `{item['relative_path']}` | {item.get('ownership_class', '-')} | {item['role']} | {item['folder_family']} | {item['hotpath_score']} | {item.get('in_degree', 0)} | {item['risk_score']} | {item['strategy']} |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -516,16 +676,29 @@ def family_summary(entries: list[FileEntry]) -> list[dict[str, object]]:
     return rows
 
 
+def ownership_summary(entries: list[FileEntry]) -> dict[str, int]:
+    out: dict[str, int] = defaultdict(int)
+    for e in entries:
+        out[e.ownership_class] += 1
+    return dict(sorted(out.items()))
+
+
 def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queues: dict[str, object], graph_stats: dict[str, object]) -> None:
     readiness = readiness_score(entries, graph_stats)
     mode = guardrail_mode(readiness)
-    lines = ["# ACG Structure Map", "", f"Version: `{VERSION}`", f"Source: `{source}`", f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}", f"Total indexed files: {len(entries)}", f"Readiness score: {readiness} [{mode.upper()}]", "", "## Import Graph Stats", "", f"- Nodes: {graph_stats.get('nodes', 0)}", f"- Total edges: {graph_stats.get('total_edges', 0)}", f"- Max in-degree: {graph_stats.get('max_in_degree', 0)}", f"- Score basis: {graph_stats.get('hotpath_score_basis')}", "", "## Cluster Overview", "", "| Family | Files | Avg Hotpath | Dominant Strategy |", "|---|---:|---:|---|"]
+    lines = ["# ACG Structure Map", "", f"Version: `{VERSION}`", f"Source: `{source}`", f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}", f"Total indexed files: {len(entries)}", f"Readiness score: {readiness} [{mode.upper()}]", "", "## Project Roots", ""]
+    for root in graph_stats.get("project_roots", []):
+        lines.append(f"- `{root}`")
+    lines += ["", "## Ownership Summary", "", "| Ownership | Files |", "|---|---:|"]
+    for k, v in ownership_summary(entries).items():
+        lines.append(f"| {k} | {v} |")
+    lines += ["", "## Import Graph Stats", "", f"- Nodes: {graph_stats.get('nodes', 0)}", f"- Total edges: {graph_stats.get('total_edges', 0)}", f"- Max in-degree: {graph_stats.get('max_in_degree', 0)}", f"- Score basis: {graph_stats.get('hotpath_score_basis')}", "", "## Cluster Overview", "", "| Family | Files | Avg Hotpath | Dominant Strategy |", "|---|---:|---:|---|"]
     for row in family_summary(entries):
         lines.append(f"| {row['family']} | {row['files']} | {row['avg_hotpath_score']} | {row['dominant_strategy']} |")
-    lines += ["", "## Top Hotpath Files", "", "| Score | In | Out | Risk | Strategy | Family | File |", "|---:|---:|---:|---:|---|---|---|"]
+    lines += ["", "## Top Hotpath Files", "", "| Score | In | Out | Owner | Risk | Strategy | Family | File |", "|---:|---:|---:|---|---:|---|---|---|"]
     for entry in sort_hot(entries)[:25]:
-        lines.append(f"| {entry.hotpath_score} | {entry.in_degree} | {entry.out_degree} | {entry.risk_score} | {entry.strategy} | {entry.folder_family} | `{entry.relative_path}` |")
-    lines += ["", "## Rule", "", "Do not ask an AI to read the whole folder. Use the reading queues and search targets."]
+        lines.append(f"| {entry.hotpath_score} | {entry.in_degree} | {entry.out_degree} | {entry.ownership_class} | {entry.risk_score} | {entry.strategy} | {entry.folder_family} | `{entry.relative_path}` |")
+    lines += ["", "## Rule", "", "Only PROJECT_OWNED files can compete in the main hotpath queue. External/runtime/dependency files are capped and excluded from the main import graph."]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -544,7 +717,7 @@ def copy_phase1(out_dir: Path, queues: dict[str, object]) -> None:
 def write_search_targets(path: Path, queues: dict[str, object]) -> None:
     lines = ["# ACG Search Targets", "", "These files should not be opened fully. Use targeted search only.", ""]
     for item in queues.get("search_targets", []):
-        lines.append(f"- `{item['relative_path']}` - {item['strategy']}, {item['size']} bytes, risk {item['risk_score']}")
+        lines.append(f"- `{item['relative_path']}` - {item.get('ownership_class', '-')}, {item['strategy']}, {item['size']} bytes, risk {item['risk_score']}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -576,6 +749,7 @@ Exact files requested:
 Files explicitly excluded:
 - search_only: excluded unless targeted search is approved
 - terminal_asset: excluded
+- non-PROJECT_OWNED: excluded unless explicit human approval is granted
 - legacy: excluded unless approval_required exception is approved
 - logs: excluded
 - exports: excluded
@@ -594,7 +768,10 @@ WAITING_FOR_HUMAN_APPROVAL
 def write_execution_brief(path: Path, queues: dict[str, object], entries: list[FileEntry], graph_stats: dict[str, object]) -> None:
     readiness = readiness_score(entries, graph_stats)
     mode = guardrail_mode(readiness)
-    lines = ["# ACG Execution Brief", "", f"You are operating under ACG Structure Scout v{VERSION}.", "", f"Readiness: {readiness} [{mode.upper()}]", "", "Import graph scoring is active for source-code files.", "", "Read `../ACG_MASTER.md` first. It is the only root-level instruction file.", "Read `next_prompt.md` before Phase 1.", "Read `phase2_plan_template.md` before Phase 1.", "Use `phase1_queue.md` and `phase2_queue.md`; do not depend on reading the full JSON manually.", "Do not read the entire source folder. Read only the Phase 1 pack first.", "Do not edit files. This is orientation only.", "", "## Import Graph Stats", "", f"- total_edges: {graph_stats.get('total_edges', 0)}", f"- max_in_degree: {graph_stats.get('max_in_degree', 0)}", f"- score_basis: {graph_stats.get('hotpath_score_basis')}", "", "## You may read now"]
+    lines = ["# ACG Execution Brief", "", f"You are operating under ACG Structure Scout v{VERSION}.", "", f"Readiness: {readiness} [{mode.upper()}]", "", "Ownership-aware import graph scoring is active.", "Only PROJECT_OWNED source files are included in the main import graph.", "External runtime/dependency/cache files cannot win the main attention queue.", "", "## Import Graph Stats", "", f"- total_edges: {graph_stats.get('total_edges', 0)}", f"- max_in_degree: {graph_stats.get('max_in_degree', 0)}", f"- score_basis: {graph_stats.get('hotpath_score_basis')}", "", "## Project Roots", ""]
+    for root in graph_stats.get("project_roots", []):
+        lines.append(f"- `{root}`")
+    lines += ["", "## Required artifacts to inspect first", "", "- `../ACG_MASTER.md`", "- `execution_brief.md`", "- `next_prompt.md`", "- `phase2_plan_template.md`", "- `structure_map.md`", "- `phase1_queue.md`", "- `phase2_queue.md`", "- `approval_required.md`", "- `search_targets.md`", "- `../phase1_pack/`", "", "## You may read now"]
     for item in queues.get("phase1", []):
         lines.append(f"- `{item['relative_path']}`")
     lines += ["", "## Required Phase 1 Output", "", "```txt", "ACG-UNDERSTOOD: structure-scout", "SCOPE: files you actually read", "RISKS: key risks before deeper processing", "QUESTIONS: objective questions or approval requests only", "NEXT: Phase 2 plan or up to 3 clarification questions", "```"]
@@ -604,7 +781,7 @@ def write_execution_brief(path: Path, queues: dict[str, object], entries: list[F
 def write_next_prompt(path: Path, queues: dict[str, object]) -> None:
     lines = ["# ACG Continuation Protocol", "", "This file is not a human copy/paste prompt.", "The AI must read this file before Phase 1 and apply it automatically after Phase 1.", "", "## Current safe Phase 2 candidates", ""]
     for item in queues.get("phase2", []):
-        lines.append(f"- `{item['relative_path']}` - {item['role']}, score {item['hotpath_score']}, in_degree {item.get('in_degree', 0)}")
+        lines.append(f"- `{item['relative_path']}` - {item.get('ownership_class', '-')}, {item['role']}, score {item['hotpath_score']}, in_degree {item.get('in_degree', 0)}")
     lines += ["", "Return NEXT using `phase2_plan_template.md` exactly."]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -612,7 +789,10 @@ def write_next_prompt(path: Path, queues: dict[str, object]) -> None:
 def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dict[str, object], graph_stats: dict[str, object]) -> None:
     readiness = readiness_score(entries, graph_stats)
     mode = guardrail_mode(readiness)
-    lines = ["# ACG Master Context File", "", f"Generated by ACG Structure Scout v{VERSION}.", "", "This is the root instruction file for the generated ACG context package.", "", "## Source", "", f"`{source}`", "", "## Inventory Summary", "", f"- Total indexed files: {len(entries)}", f"- Phase 1 files: {len(queues.get('phase1', []))}", f"- Safe Phase 2 candidates: {len(queues.get('phase2', []))}", f"- Search-only / terminal assets: {len(queues.get('search_targets', []))}", f"- Import graph nodes: {graph_stats.get('nodes', 0)}", f"- Import graph edges: {graph_stats.get('total_edges', 0)}", f"- Max in-degree: {graph_stats.get('max_in_degree', 0)}", f"- Readiness score: {readiness} [{mode.upper()}]", "", "## Read Order for AI", "", "1. Read this file: `ACG_MASTER.md`.", "2. Read `artifacts/execution_brief.md`.", "3. Read `artifacts/next_prompt.md`.", "4. Read `artifacts/phase2_plan_template.md`.", "5. Read `artifacts/structure_map.md`.", "6. Read `artifacts/phase1_queue.md` and `artifacts/phase2_queue.md`.", "7. Read `artifacts/approval_required.md` and `artifacts/search_targets.md`.", "8. Read only files copied inside `phase1_pack/`.", "", "## Do Not Do", "", "- Do not read the original source folder blindly.", "- Do not open terminal assets directly.", "- Do not edit files during orientation.", "- Do not ask vague questions such as 'what next?'."]
+    lines = ["# ACG Master Context File", "", f"Generated by ACG Structure Scout v{VERSION}.", "", "This is the root instruction file for the generated ACG context package.", "", "## Source", "", f"`{source}`", "", "## Inventory Summary", "", f"- Total indexed files: {len(entries)}", f"- Phase 1 files: {len(queues.get('phase1', []))}", f"- Safe Phase 2 candidates: {len(queues.get('phase2', []))}", f"- Search-only / terminal assets: {len(queues.get('search_targets', []))}", f"- Import graph nodes: {graph_stats.get('nodes', 0)}", f"- Import graph edges: {graph_stats.get('total_edges', 0)}", f"- Max in-degree: {graph_stats.get('max_in_degree', 0)}", f"- Readiness score: {readiness} [{mode.upper()}]", "", "## Project Roots", ""]
+    for root in graph_stats.get("project_roots", []):
+        lines.append(f"- `{root}`")
+    lines += ["", "## Read Order for AI", "", "1. Read this file: `ACG_MASTER.md`.", "2. Read `artifacts/execution_brief.md`.", "3. Read `artifacts/next_prompt.md`.", "4. Read `artifacts/phase2_plan_template.md`.", "5. Read `artifacts/structure_map.md`.", "6. Read `artifacts/phase1_queue.md` and `artifacts/phase2_queue.md`.", "7. Read `artifacts/approval_required.md` and `artifacts/search_targets.md`.", "8. Read only files copied inside `phase1_pack/`.", "", "## Do Not Do", "", "- Do not read the original source folder blindly.", "- Do not open terminal assets directly.", "- Do not read non-PROJECT_OWNED files unless explicitly approved.", "- Do not edit files during orientation.", "- Do not ask vague questions such as 'what next?'."]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -625,7 +805,12 @@ def cleanup_legacy_root_artifacts(out: Path) -> None:
 
 def write_scout_report(path: Path, source: Path, entries: list[FileEntry], queues: dict[str, object], graph_stats: dict[str, object]) -> None:
     readiness = readiness_score(entries, graph_stats)
-    report = {"acg_version": VERSION, "generated_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(), "root": str(source), "system_profile": {"total_files": len(entries), "has_entrypoint": bool(graph_stats.get("has_entrypoint")), "has_control_files": bool(graph_stats.get("has_control_files"))}, "readiness_score": readiness, "guardrail_mode": guardrail_mode(readiness), "import_graph": graph_stats, "manifest_ref": "context_manifest.jsonl", "attention_queue": queues.get("phase1", []), "phased_reading_plan": {"phase1": queues.get("phase1", []), "phase2": queues.get("phase2", []), "phase3_ref": "search_targets.md"}}
+    mode = guardrail_mode(readiness)
+    extensions: dict[str, int] = defaultdict(int)
+    for entry in entries:
+        if entry.extension:
+            extensions[entry.extension] += 1
+    report = {"acg_version": VERSION, "generated_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(), "root": str(source), "system_profile": {"total_files": len(entries), "language_map": dict(extensions), "ownership_summary": ownership_summary(entries), "project_roots": graph_stats.get("project_roots", []), "has_entrypoint": bool(graph_stats.get("has_entrypoint")), "has_control_files": bool(graph_stats.get("has_control_files"))}, "readiness_score": readiness, "guardrail_mode": mode, "attention_queue": queues.get("phase1", [])[:20], "phased_reading_plan": {"phase1": queues.get("phase1", []), "phase2": queues.get("phase2", []), "phase3": queues.get("search_targets", [])[:10]}, "broken_refs": [], "execution_brief": {"task_id": "structure-scout", "root": str(source), "total_files": len(entries), "readiness_score": readiness, "guardrail_mode": mode, "readiness_components": {"W1_entrypoint_detected": bool(graph_stats.get("has_entrypoint")), "W2_control_files_present": bool(graph_stats.get("has_control_files")), "W3_open_now_count": len(queues.get("phase1", [])), "W4_broken_refs_count": 0}, "import_graph": {"total_edges": graph_stats.get("total_edges", 0), "max_in_degree": graph_stats.get("max_in_degree", 0), "hotpath_score_basis": graph_stats.get("hotpath_score_basis")}, "instruction": "Read Phase 1 files only. Return ACG-UNDERSTOOD, SCOPE, RISKS, QUESTIONS, NEXT before any edit."}, "context_manifest_ref": "context_manifest.jsonl"}
     write_json(path, report)
 
 
@@ -664,6 +849,8 @@ def main() -> int:
     write_scout_report(artifacts / "scout_report.json", source, entries, queues, graph_stats)
     print(f"ACG Structure Scout indexed files: {len(entries)}")
     print(f"ACG Structure Scout version: {VERSION}")
+    print(f"Project roots: {', '.join(str(x) for x in graph_stats.get('project_roots', []))}")
+    print(f"Ownership summary: {ownership_summary(entries)}")
     print(f"Import graph nodes: {graph_stats.get('nodes', 0)}")
     print(f"Import graph edges: {graph_stats.get('total_edges', 0)}")
     print(f"Max in-degree: {graph_stats.get('max_in_degree', 0)}")
