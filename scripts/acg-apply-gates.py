@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Patch an existing ACG package with strict opening/closing gates.
+"""Patch an existing ACG package with strict response discipline.
 
 Usage:
   python scripts/acg-apply-gates.py --source /path/to/source --out /path/to/.acg
 
 This is a v0.4-beta hardening postprocessor. It does not scan the source tree.
 It only edits generated ACG artifacts under --out.
+
+Core rule:
+  If the AI skips the response contract, opening gate, SCOPE, or closing gate,
+  Phase 1 is invalid even if the analysis looks useful.
 """
 from __future__ import annotations
 
@@ -102,7 +106,7 @@ def skeleton_text(out: Path) -> str:
     c = counts(out)
     return f"""## Required Final Output Skeleton
 
-The final Phase 1 answer is invalid unless it follows this structure.
+The final Phase 1 answer is invalid unless it follows this structure literally.
 
 ```txt
 ACG-UNDERSTOOD: structure-scout
@@ -196,6 +200,78 @@ CLOSING_GATE:
 """
 
 
+def forbidden_substitutions_text() -> str:
+    return """## Forbidden Output Substitutions
+
+The AI must not rename required sections.
+
+Invalid substitutions:
+
+- `Phase 1 Summary` does not replace `ACG-UNDERSTOOD: structure-scout`.
+- `Scope & Audit` does not replace `SCOPE` unless the literal `SCOPE:` block exists.
+- `STATUS` does not replace `CLOSING_GATE`.
+- `Phase 2 Strategy` does not replace `## ACG Phase 2 Reading Plan`.
+- `Top Candidates` does not replace `Exact files requested`.
+- A prose summary does not replace `SELF_CHECKS`.
+
+If the literal required section names are absent, Phase 1 is invalid.
+"""
+
+
+def response_contract_text(source: Path, out: Path) -> str:
+    c = counts(out)
+    b = boundary(source, out)
+    return f"""# ACG 00 Response Contract
+
+This is the first artifact the AI must read after `ACG_MASTER.md`.
+
+The response contract has priority over style preferences and summary habits.
+
+## Non-Negotiable Rule
+
+The ACG steps are the process. If the AI skips any required step, the protocol has already failed.
+
+A useful-looking analysis is not compliant unless it preserves the literal output contract.
+
+## Current Package Boundary
+
+```txt
+current_package_root: {b['current_package_root']}
+artifacts_root:       {b['artifacts_root']}
+phase1_pack_root:     {b['phase1_pack_root']}
+source_root:          {b['source_root']}
+```
+
+During Phase 1, read only:
+
+- `ACG_MASTER.md`
+- files under `artifacts/`
+- files under `phase1_pack/`, in the order defined by `phase1_reading_order.md`
+
+Do not read from `source_root` directly during Phase 1.
+
+Do not inspect parent, sibling, previous, cached, backup, alternate, or regenerated packages unless the human explicitly asks to compare packages.
+
+Do not search for Phase 2 files during Phase 1.
+
+Phase 2 queue entries are metadata approval requests. They are not expected inside `phase1_pack/`.
+
+## Required Counts
+
+```txt
+expected Phase 1 files: {c['phase1_files']}
+expected citation checks: {c['citation_checks']}
+required fields per requested Phase 2 file: 4
+```
+
+{gate_text(source, out)}
+
+{skeleton_text(out)}
+
+{forbidden_substitutions_text()}
+"""
+
+
 def append_once(path: Path, marker: str, text: str) -> None:
     if not path.is_file():
         return
@@ -205,14 +281,56 @@ def append_once(path: Path, marker: str, text: str) -> None:
     path.write_text(old.rstrip() + "\n\n" + text.strip() + "\n", encoding="utf-8")
 
 
+def prepend_once(path: Path, marker: str, text: str) -> None:
+    if not path.is_file():
+        return
+    old = path.read_text(encoding="utf-8")
+    if marker in old:
+        return
+    path.write_text(text.strip() + "\n\n" + old.lstrip(), encoding="utf-8")
+
+
+def contract_reference_text() -> str:
+    return """# ACG Response Contract Priority
+
+Before any summary, read `artifacts/00_RESPONSE_CONTRACT.md`.
+
+The final answer is invalid unless it follows that skeleton literally.
+
+Required literal sections:
+
+```txt
+ACG-UNDERSTOOD: structure-scout
+OPENING_GATE
+SELF_CHECKS
+SCOPE
+CITATION_CHECK
+RISKS
+QUESTIONS
+NEXT
+CLOSING_GATE
+```
+
+Do not replace required sections with prose headings such as `Phase 1 Summary`, `Scope & Audit`, `STATUS`, `Phase 2 Strategy`, or `Top Candidates`.
+
+If `SCOPE` is missing, Phase 1 is incomplete because the read set cannot be audited.
+"""
+
+
 def patch(source: Path, out: Path) -> None:
     artifacts = out / "artifacts"
+    response_contract = artifacts / "00_RESPONSE_CONTRACT.md"
+    response_contract.write_text(response_contract_text(source, out), encoding="utf-8")
+
     gate = gate_text(source, out)
     skeleton = skeleton_text(out)
-    block = gate + "\n" + skeleton
+    forbidden = forbidden_substitutions_text()
+    block = contract_reference_text() + "\n" + gate + "\n" + skeleton + "\n" + forbidden
+
+    # Make the contract maximally salient in the master file.
+    prepend_once(out / "ACG_MASTER.md", "# ACG Response Contract Priority", contract_reference_text())
 
     targets = [
-        out / "ACG_MASTER.md",
         artifacts / "execution_brief.md",
         artifacts / "step_checks.md",
         artifacts / "completion_checklist.md",
@@ -220,12 +338,34 @@ def patch(source: Path, out: Path) -> None:
         artifacts / "phase2_plan_template.md",
     ]
     for target in targets:
-        append_once(target, "## ACG Opening and Closing Gates", block)
+        append_once(target, "# ACG Response Contract Priority", block)
 
     report_path = artifacts / "scout_report.json"
     if report_path.is_file():
         report = load_json(report_path)
         c = counts(out)
+        report["response_contract"] = {
+            "artifact": "artifacts/00_RESPONSE_CONTRACT.md",
+            "must_read_first_after_master": True,
+            "literal_sections_required": [
+                "ACG-UNDERSTOOD: structure-scout",
+                "OPENING_GATE",
+                "SELF_CHECKS",
+                "SCOPE",
+                "CITATION_CHECK",
+                "RISKS",
+                "QUESTIONS",
+                "NEXT",
+                "CLOSING_GATE",
+            ],
+            "forbidden_substitutions": [
+                "Phase 1 Summary",
+                "Scope & Audit without literal SCOPE",
+                "STATUS instead of CLOSING_GATE",
+                "Phase 2 Strategy instead of ACG Phase 2 Reading Plan",
+                "Top Candidates instead of Exact files requested",
+            ],
+        }
         report["opening_closing_gates"] = {
             "opening_gate_required": True,
             "closing_gate_required": True,
@@ -239,7 +379,7 @@ def patch(source: Path, out: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Apply ACG opening/closing gates to a generated package")
+    parser = argparse.ArgumentParser(description="Apply ACG response contract and gates to a generated package")
     parser.add_argument("--source", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
@@ -250,9 +390,9 @@ def main() -> int:
     if not (out / "artifacts" / "reading_queues.json").is_file():
         raise SystemExit(f"ACG reading_queues.json not found under: {out}")
     patch(source, out)
-    print(f"ACG gates applied: {out}")
+    print(f"ACG response contract applied: {out}")
+    print(f"Response contract: {out / 'artifacts' / '00_RESPONSE_CONTRACT.md'}")
     print(f"Master file: {out / 'ACG_MASTER.md'}")
-    print(f"Step checks: {out / 'artifacts' / 'step_checks.md'}")
     return 0
 
 
