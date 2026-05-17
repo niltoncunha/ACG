@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""ACG v0.4-alpha orchestrator.
+"""ACG v0.4-beta orchestrator.
 
-Single-command alpha flow for topology-aware context generation.
+Single-command flow for topology-aware context generation.
 
-This keeps v0.3 stable while making v0.4 operational:
-- runs acg-scout.py
-- runs acg-import-graph.py with a simple cache key
-- runs acg-lexical-index.py optionally
-- exposes v0.4 artifacts in ACG_MASTER.md and execution_brief.md
-- writes context_payload.json
-- writes performance_report.md
+This wrapper must not downgrade or overwrite the package contract emitted by
+acg-scout.py. It runs the Scout, adds optional v0.4 topology/payload artifacts,
+and patches dynamic package-boundary rules into the generated ACG package.
 
 Usage:
   python scripts/acg-v04.py --source /path/to/project --out .acg
@@ -26,7 +22,6 @@ import time
 from pathlib import Path
 
 CODE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs"}
-TEXT_EXTENSIONS = {".md", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", "coverage"}
 
 
@@ -39,7 +34,6 @@ def should_skip(path: Path) -> bool:
 
 
 def sanitize_text(text: str) -> str:
-    """Remove NUL/control chars that poison JSON payloads while keeping whitespace."""
     return "".join(ch for ch in text if ch in "\n\r\t" or ord(ch) >= 32)
 
 
@@ -73,6 +67,10 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def write_json(path: Path, data: object) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def read_text_safe(path: Path, max_bytes: int = 100_000) -> str:
     if not path.is_file():
         return ""
@@ -82,11 +80,6 @@ def read_text_safe(path: Path, max_bytes: int = 100_000) -> str:
 
 def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
-
-
-def queue_count(queues: dict, key: str) -> int:
-    value = queues.get(key, [])
-    return len(value) if isinstance(value, list) else 0
 
 
 def build_context_payload(source: Path, out: Path, model_budget_tokens: int) -> dict:
@@ -132,15 +125,17 @@ def build_context_payload(source: Path, out: Path, model_budget_tokens: int) -> 
     surfaces = read_text_safe(artifacts / "surface_summaries.md", max_bytes=250_000)
     cluster_map = read_text_safe(artifacts / "cluster_map.md", max_bytes=120_000)
     payload = {
-        "schema": "acg.context_payload.v0.4-alpha",
+        "schema": "acg.context_payload.v0.4-beta",
         "generated": now(),
         "source": str(source),
+        "package_root": str(out),
         "model_budget_tokens": model_budget_tokens,
         "budget_policy": {
             "note": "This is a lightweight payload. It is not a full RAG system.",
             "phase1_full_files": len(phase1_items),
             "topological_hubs": len(hubs),
         },
+        "package_boundary": package_boundary(source, out),
         "skeleton": {
             "cluster_map_md": cluster_map,
             "top_hubs": hubs,
@@ -160,221 +155,132 @@ def build_context_payload(source: Path, out: Path, model_budget_tokens: int) -> 
     return payload
 
 
-def write_v04_master(out: Path, source: Path, queues: dict, indexed_code_files: int) -> None:
-    phase1 = queue_count(queues, "phase1")
-    phase2 = queue_count(queues, "phase2")
-    approval = queue_count(queues, "approval_required")
-    search_targets = queue_count(queues, "search_targets")
-    human_only = queue_count(queues, "human_only")
-    ignored = queue_count(queues, "ignored")
-    total = phase1 + phase2 + approval + search_targets + human_only + ignored
-
-    lines = [
-        "# ACG Master Context File",
-        "",
-        "This is the root instruction file for the generated ACG context package.",
-        "",
-        "Start here. Do not treat files in `artifacts/` as separate entrypoints unless this file points to them.",
-        "",
-        "## Generated Layout",
-        "",
-        "```txt",
-        ".acg/",
-        "  ACG_MASTER.md",
-        "  phase1_pack/",
-        "  cache/",
-        "    topology.sha256",
-        "  artifacts/",
-        "    context_manifest.jsonl",
-        "    structure_map.md",
-        "    hotpaths.json",
-        "    reading_queues.json",
-        "    phase1_queue.md",
-        "    phase2_queue.md",
-        "    approval_required.md",
-        "    search_targets.md",
-        "    execution_brief.md",
-        "    next_prompt.md",
-        "    phase2_plan_template.md",
-        "    import_graph.json",
-        "    cluster_map.md",
-        "    surface_summaries.md",
-        "    context_payload.json",
-        "    performance_report.md",
-        "```",
-        "",
-        "## Source",
-        "",
-        f"`{source}`",
-        "",
-        "## Inventory Summary",
-        "",
-        f"- Total queued/indexed files: {total}",
-        f"- Phase 1 files: {phase1}",
-        f"- Safe Phase 2 candidates: {phase2}",
-        f"- Approval-required candidates: {approval}",
-        f"- Search-only / terminal assets: {search_targets}",
-        f"- Human-only files: {human_only}",
-        f"- Ignored files: {ignored}",
-        f"- Indexed code files for topology: {indexed_code_files}",
-        "",
-        "## What the human does",
-        "",
-        "The human does not need to invent follow-up prompts or copy/paste `next_prompt.md`.",
-        "The human gives the AI this file, then approves, rejects, or clarifies the AI's bounded NEXT block.",
-        "",
-        "## v0.4 Topology Artifacts",
-        "",
-        "- `artifacts/cluster_map.md`: read before planning Phase 2. It is the human-readable topology layer.",
-        "- `artifacts/surface_summaries.md`: read before planning Phase 2. It is allowed summary content for high-weight code surfaces.",
-        "- `artifacts/context_payload.json`: optional structured payload mode. Use it instead of manual file loading only when the caller asks for payload mode or context compaction.",
-        "- `artifacts/import_graph.json`: machine-readable topology. Do not read fully by default; use only for diagnostics or tool processing.",
-        "- `artifacts/performance_report.md`: diagnostics only. Read it when validating v0.4 runtime cost.",
-        "",
-        "Surface summaries are allowed context. The original files summarized there keep their original queue status and may still be `search_only` or approval-gated.",
-        "",
-        "## Read Order for AI",
-        "",
-        "1. Read this file: `ACG_MASTER.md`.",
-        "2. Read `artifacts/execution_brief.md`.",
-        "3. Read `artifacts/next_prompt.md` before Phase 1; it is the automatic continuation protocol.",
-        "4. Read `artifacts/phase2_plan_template.md`; it is the required NEXT output contract.",
-        "5. Read `artifacts/structure_map.md` for the structural overview.",
-        "6. Read `artifacts/cluster_map.md` for v0.4 topology.",
-        "7. Read `artifacts/surface_summaries.md` for allowed code-surface summaries.",
-        "8. Read `artifacts/phase1_queue.md` and `artifacts/phase2_queue.md` for human-readable queues.",
-        "9. Read `artifacts/approval_required.md` and `artifacts/search_targets.md` to understand what must not be opened directly.",
-        "10. Read only files copied inside `phase1_pack/`.",
-        "11. Return the Phase 1 confirmation plus a fully formed NEXT block. Do not wait for the human to paste another prompt.",
-        "",
-        "## Optional Payload Mode",
-        "",
-        "If the user asks for compact context, payload mode, or single-file handoff, read `artifacts/context_payload.json`.",
-        "Otherwise, do not duplicate Phase 1 by reading both `context_payload.json` and all files in `phase1_pack/` unless explicitly useful.",
-        "",
-        "## Do Not Do",
-        "",
-        "- Do not read the original source folder blindly.",
-        "- Do not open terminal assets directly.",
-        "- Do not treat `... N more` summaries as complete lists.",
-        "- Do not depend on reading full JSON manually when a compact `.md` queue exists.",
-        "- Do not read `import_graph.json` fully unless topology diagnostics are needed.",
-        "- Do not edit files during orientation.",
-        "- Do not claim final understanding from Phase 1 alone.",
-        "- Do not ask the human vague questions such as 'what next?' Use `next_prompt.md`.",
-        "",
-        "## Required AI Output",
-        "",
-        "```txt",
-        "ACG-UNDERSTOOD: structure-scout",
-        "SCOPE: files you actually read",
-        "RISKS: key risks before deeper processing",
-        "QUESTIONS: objective questions or approval requests only",
-        "NEXT: apply artifacts/next_prompt.md and artifacts/phase2_plan_template.md automatically",
-        "```",
-        "",
-        "## Human Next Step",
-        "",
-        "Approve, reject, or clarify the AI's NEXT block. Do not design a new prompt manually.",
-    ]
-    (out / "ACG_MASTER.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+def count_code_files(source: Path) -> int:
+    total = 0
+    for path in source.rglob("*"):
+        if should_skip(path) or not path.is_file() or path.suffix.lower() not in CODE_EXTENSIONS:
+            continue
+        total += 1
+    return total
 
 
-def write_v04_execution_brief(out: Path) -> None:
-    artifacts = out / "artifacts"
-    queues = load_json(artifacts / "reading_queues.json")
-    phase1 = queues.get("phase1", [])
-    phase2 = queues.get("phase2", [])
-    search_targets = queues.get("search_targets", [])
-
-    lines = [
-        "# ACG Execution Brief",
-        "",
-        "You are operating under ACG Structure Scout v0.4-alpha.",
-        "",
-        "Read `../ACG_MASTER.md` first. It is the only root-level instruction file.",
-        "Read `next_prompt.md` before Phase 1. It is your continuation protocol after Phase 1.",
-        "Read `phase2_plan_template.md` before Phase 1. It defines the required NEXT format.",
-        "Read `cluster_map.md` and `surface_summaries.md` before planning Phase 2.",
-        "Use `phase1_queue.md` and `phase2_queue.md` for conversational planning; do not depend on reading the full JSON manually.",
-        "Do not read the entire source folder. Read only the Phase 1 pack first.",
-        "Do not edit files. This is orientation only.",
-        "Do not claim final understanding. Return uncertainties explicitly.",
-        "The human should not need to copy/paste a second prompt. You must apply `next_prompt.md` automatically after Phase 1.",
-        "",
-        "## Required artifacts to inspect first",
-        "",
-        "- `../ACG_MASTER.md`",
-        "- `execution_brief.md`",
-        "- `next_prompt.md`",
-        "- `phase2_plan_template.md`",
-        "- `structure_map.md`",
-        "- `cluster_map.md`",
-        "- `surface_summaries.md`",
-        "- `phase1_queue.md`",
-        "- `phase2_queue.md`",
-        "- `approval_required.md`",
-        "- `search_targets.md`",
-        "- `../phase1_pack/`",
-        "",
-        "## Optional v0.4 diagnostics",
-        "",
-        "- `performance_report.md`: read only when checking runtime cost.",
-        "- `context_payload.json`: read only in payload mode or compact handoff mode.",
-        "- `import_graph.json`: machine-readable; do not read fully by default.",
-        "",
-        "## You may read now",
-    ]
-    for item in phase1:
-        lines.append(f"- `{item['relative_path']}`")
-    lines += ["", "## You may request later"]
-    for item in phase2[:20]:
-        lines.append(f"- `{item['relative_path']}`")
-    if len(phase2) > 20:
-        lines.append(f"- ... {len(phase2) - 20} more. Full queue: `phase2_queue.md`.")
-    lines += ["", "## Search-only targets", "", "Summary only. Do not infer that this is the full list; use `search_targets.md`.", ""]
-    for item in search_targets[:20]:
-        lines.append(f"- `{item['relative_path']}`")
-    if len(search_targets) > 20:
-        lines.append(f"- ... {len(search_targets) - 20} more. Full list: `search_targets.md`; machine-readable queue: `reading_queues.json` under `search_targets`.")
-    lines += [
-        "",
-        "## Required Phase 1 Output",
-        "",
-        "After Phase 1, reply with:",
-        "",
-        "```txt",
-        "ACG-UNDERSTOOD: structure-scout",
-        "SCOPE: files you actually read",
-        "RISKS: key risks before deeper processing",
-        "QUESTIONS: objective questions or approval requests only",
-        "NEXT: Phase 2 plan or up to 3 clarification questions, following next_prompt.md and phase2_plan_template.md",
-        "```",
-    ]
-    (artifacts / "execution_brief.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+def package_boundary(source: Path, out: Path) -> dict[str, object]:
+    out = out.resolve()
+    return {
+        "current_package_root": str(out),
+        "acg_master": str((out / "ACG_MASTER.md").resolve()),
+        "artifacts_root": str((out / "artifacts").resolve()),
+        "phase1_pack_root": str((out / "phase1_pack").resolve()),
+        "source_root": str(source.resolve()),
+        "phase1_allowed_roots": [
+            str((out / "ACG_MASTER.md").resolve()),
+            str((out / "artifacts").resolve()),
+            str((out / "phase1_pack").resolve()),
+        ],
+        "phase1_forbidden": [
+            "parent directories of current_package_root",
+            "sibling directories of current_package_root",
+            "previous, cached, backup, alternate, or regenerated ACG packages",
+            "direct reads from source_root",
+            "FindFiles/SearchText used to locate Phase 2 files before human approval",
+        ],
+        "phase2_queue_semantics": "Phase 2 queue entries are metadata requests for human approval. They are not expected to exist in phase1_pack, and absence from phase1_pack is not a missing-file error.",
+    }
 
 
-def patch_next_prompt_for_v04(out: Path) -> None:
-    path = out / "artifacts" / "next_prompt.md"
+def boundary_markdown(source: Path, out: Path) -> str:
+    b = package_boundary(source, out)
+    return f"""## ACG Package Boundary
+
+Current ACG package root is the directory containing this `ACG_MASTER.md`.
+
+```txt
+current_package_root: {b['current_package_root']}
+artifacts_root:       {b['artifacts_root']}
+phase1_pack_root:     {b['phase1_pack_root']}
+source_root:          {b['source_root']}
+```
+
+During Phase 1, the AI may read only:
+
+- this `ACG_MASTER.md` file;
+- files under this package's `artifacts/` directory;
+- files under this package's `phase1_pack/` directory, in `phase1_reading_order.md` order.
+
+Do not inspect any path outside the current ACG package root during Phase 1.
+
+Do not inspect parent, sibling, previous, cached, backup, alternate, or regenerated ACG packages unless the human explicitly asks to compare packages.
+
+Do not search for Phase 2 files during Phase 1.
+
+Phase 2 queue entries are metadata requests for human approval. They are not expected to exist inside `phase1_pack/`. Absence from `phase1_pack/` is not a missing-file error.
+"""
+
+
+def insert_section_once(path: Path, marker: str, section: str, after_heading: str | None = None) -> None:
     if not path.is_file():
         return
     text = path.read_text(encoding="utf-8")
-    marker = "## v0.4 Planning Context"
     if marker in text:
         return
-    insert = (
-        "\n"
-        "## v0.4 Planning Context\n\n"
-        "Before proposing Phase 2, consider `cluster_map.md` and `surface_summaries.md` if available.\n"
-        "Do not request original code files only because they appear in surface summaries. Surface summaries are allowed context; original files keep their queue status.\n"
-        "Do not read `import_graph.json` fully unless topology diagnostics are explicitly required.\n"
-        "Use `context_payload.json` only in payload mode or compact handoff mode.\n"
-    )
-    if "## Required NEXT block" in text:
-        text = text.replace("## Required NEXT block", insert + "\n## Required NEXT block")
+    if after_heading and after_heading in text:
+        text = text.replace(after_heading, after_heading + "\n\n" + section.strip() + "\n", 1)
     else:
-        text += insert
+        text = text.rstrip() + "\n\n" + section.strip() + "\n"
     path.write_text(text, encoding="utf-8")
+
+
+def patch_package_boundary(out: Path, source: Path) -> None:
+    artifacts = out / "artifacts"
+    section = boundary_markdown(source, out)
+    marker = "## ACG Package Boundary"
+
+    insert_section_once(out / "ACG_MASTER.md", marker, section, after_heading="## Source")
+    insert_section_once(artifacts / "execution_brief.md", marker, section, after_heading="## Expected Completion Counts")
+    insert_section_once(artifacts / "next_prompt.md", marker, section, after_heading="## Expected Counts")
+    insert_section_once(artifacts / "phase2_plan_template.md", marker, section)
+    insert_section_once(artifacts / "completion_checklist.md", marker, section)
+
+    checklist = artifacts / "completion_checklist.md"
+    if checklist.is_file():
+        text = checklist.read_text(encoding="utf-8")
+        extra = """
+## Package Boundary Checklist
+
+- [ ] I stayed inside the current package root during Phase 1.
+- [ ] I did not inspect parent, sibling, previous, cached, backup, alternate, or regenerated packages.
+- [ ] I did not read directly from `source_root` during Phase 1.
+- [ ] I did not search for Phase 2 files during Phase 1.
+- [ ] I did not treat absence from `phase1_pack/` as missing source context.
+"""
+        if "## Package Boundary Checklist" not in text:
+            checklist.write_text(text.rstrip() + "\n\n" + extra.strip() + "\n", encoding="utf-8")
+
+    report_path = artifacts / "scout_report.json"
+    if report_path.is_file():
+        report = load_json(report_path)
+        report["package_boundary"] = package_boundary(source, out)
+        if "completion_checklist" in report and isinstance(report["completion_checklist"], dict):
+            report["completion_checklist"]["package_boundary"] = {
+                "stay_inside_current_package_root": True,
+                "do_not_search_phase2_files_during_phase1": True,
+                "phase2_absence_from_phase1_pack_is_expected": True,
+            }
+        write_json(report_path, report)
+
+
+def patch_v04_context_notes(out: Path) -> None:
+    artifacts = out / "artifacts"
+    note = """## v0.4 Topology Context
+
+- `cluster_map.md` and `surface_summaries.md` are allowed planning context.
+- `import_graph.json` is machine-readable diagnostics; do not read fully by default.
+- `context_payload.json` is optional compact handoff mode, not mandatory Phase 1 input.
+- Surface summaries do not grant permission to open original files outside the active queue.
+"""
+    insert_section_once(out / "ACG_MASTER.md", "## v0.4 Topology Context", note)
+    insert_section_once(artifacts / "execution_brief.md", "## v0.4 Topology Context", note)
+    insert_section_once(artifacts / "next_prompt.md", "## v0.4 Topology Context", note)
 
 
 def write_performance_report(path: Path, timings: dict[str, float], source: Path, out: Path, cache_hit: bool, indexed_code_files: int) -> None:
@@ -407,17 +313,8 @@ def write_performance_report(path: Path, timings: dict[str, float], source: Path
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def count_code_files(source: Path) -> int:
-    total = 0
-    for path in source.rglob("*"):
-        if should_skip(path) or not path.is_file() or path.suffix.lower() not in CODE_EXTENSIONS:
-            continue
-        total += 1
-    return total
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description="ACG v0.4-alpha orchestrator")
+    parser = argparse.ArgumentParser(description="ACG v0.4-beta orchestrator")
     parser.add_argument("--source", required=True)
     parser.add_argument("--out", default=".acg")
     parser.add_argument("--model-budget-tokens", type=int, default=128000)
@@ -466,21 +363,18 @@ def main() -> int:
 
     started = time.perf_counter()
     payload = build_context_payload(source, out, args.model_budget_tokens)
-    (artifacts / "context_payload.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json(artifacts / "context_payload.json", payload)
     timings["context_payload"] = time.perf_counter() - started
 
     indexed_code_files = count_code_files(source)
-
-    queues = load_json(artifacts / "reading_queues.json")
-    write_v04_master(out, source, queues, indexed_code_files)
-    write_v04_execution_brief(out)
-    patch_next_prompt_for_v04(out)
-
+    patch_package_boundary(out, source)
+    patch_v04_context_notes(out)
     write_performance_report(artifacts / "performance_report.md", timings, source, out, cache_hit, indexed_code_files)
 
     print(f"ACG v0.4 complete: {out}")
     print(f"Master file: {out / 'ACG_MASTER.md'}")
     print(f"Execution brief: {artifacts / 'execution_brief.md'}")
+    print(f"Completion checklist: {artifacts / 'completion_checklist.md'}")
     print(f"Context payload: {artifacts / 'context_payload.json'}")
     print(f"Performance report: {artifacts / 'performance_report.md'}")
     return 0
