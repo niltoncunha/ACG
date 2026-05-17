@@ -5,7 +5,8 @@ Single-command flow for topology-aware context generation.
 
 This wrapper must not downgrade or overwrite the package contract emitted by
 acg-scout.py. It runs the Scout, adds optional v0.4 topology/payload artifacts,
-and patches dynamic package-boundary rules into the generated ACG package.
+and patches dynamic package-boundary rules plus step self-checks into the
+generated ACG package.
 
 Usage:
   python scripts/acg-v04.py --source /path/to/project --out .acg
@@ -124,6 +125,7 @@ def build_context_payload(source: Path, out: Path, model_budget_tokens: int) -> 
 
     surfaces = read_text_safe(artifacts / "surface_summaries.md", max_bytes=250_000)
     cluster_map = read_text_safe(artifacts / "cluster_map.md", max_bytes=120_000)
+    step_checks = read_text_safe(artifacts / "step_checks.md", max_bytes=80_000)
     payload = {
         "schema": "acg.context_payload.v0.4-beta",
         "generated": now(),
@@ -142,6 +144,7 @@ def build_context_payload(source: Path, out: Path, model_budget_tokens: int) -> 
         },
         "contracts": {
             "surface_summaries_md": surfaces,
+            "step_checks_md": step_checks,
         },
         "full_files_allowed": phase1_items,
         "summaries": {
@@ -217,6 +220,117 @@ Phase 2 queue entries are metadata requests for human approval. They are not exp
 """
 
 
+def step_checks_markdown(source: Path, out: Path) -> str:
+    artifacts = out / "artifacts"
+    queues = load_json(artifacts / "reading_queues.json")
+    phase1_count = len(queues.get("phase1_reading_order", [])) or len(queues.get("phase1", []))
+    citation_count = len(queues.get("citation_check", []))
+    phase2_count = len(queues.get("phase2", []))
+    boundary = package_boundary(source, out)
+    return f"""# ACG Step Self-Checks
+
+The AI must run these checks at the specified moments. These are operational checks, not vague self-assurance.
+
+## Expected Counts
+
+- Expected Phase 1 files in SCOPE: {phase1_count}
+- Expected citation checks: {citation_count}
+- Safe Phase 2 candidates available: {phase2_count}
+- Required fields per requested Phase 2 file: 4
+
+## MASTER_CHECK
+
+Run immediately after reading `ACG_MASTER.md`.
+
+```txt
+MASTER_CHECK:
+- current_package_root identified: {boundary['current_package_root']}
+- artifacts_root identified: {boundary['artifacts_root']}
+- phase1_pack_root identified: {boundary['phase1_pack_root']}
+- source_root identified but forbidden during Phase 1: {boundary['source_root']}
+- allowed Phase 1 roots are limited to ACG_MASTER.md, artifacts/, and phase1_pack/: YES
+- direct source_root reads are forbidden during Phase 1: YES
+- parent/sibling/previous/backup/alternate/generated packages are forbidden during Phase 1: YES
+- Phase 2 queue entries are metadata requests only: YES
+- Phase 2 files are not expected inside phase1_pack/: YES
+```
+
+## PHASE1_ORDER_CHECK
+
+Run after reading `phase1_reading_order.md`.
+
+```txt
+PHASE1_ORDER_CHECK:
+- expected Phase 1 files: {phase1_count}
+- I will read them in listed order: YES
+- I will not substitute my own order: YES
+- I will not add source files outside phase1_pack during Phase 1: YES
+```
+
+## CITATION_CHECK_PLAN
+
+Run after reading `citation_check.md`.
+
+```txt
+CITATION_CHECK_PLAN:
+- expected citation checks: {citation_count}
+- I must answer all {citation_count} checks: YES
+- partial citation check is invalid: YES
+```
+
+## BOUNDARY_CHECK
+
+Run before reading any file beyond metadata artifacts.
+
+```txt
+BOUNDARY_CHECK:
+- I stayed inside current_package_root: YES
+- I did not inspect parent or sibling directories: YES
+- I did not inspect other generated ACG packages: YES
+- I did not read directly from source_root: YES
+- I did not search for Phase 2 files during Phase 1: YES
+```
+
+## NEXT_SELF_CHECK
+
+Run before producing `NEXT`.
+
+```txt
+NEXT_SELF_CHECK:
+- Phase 2 queue is metadata only: YES
+- I did not search for Phase 2 files: YES
+- I did not call Phase 2 files missing because absent from phase1_pack: YES
+- every requested Phase 2 file has 4 fields: YES
+  - why needed
+  - question answered
+  - queue source
+  - risk
+- Decision is WAITING_FOR_HUMAN_APPROVAL: YES
+```
+
+## FINAL_COMPLETION_CHECK
+
+Run before final answer.
+
+```txt
+FINAL_COMPLETION_CHECK:
+- ACG-UNDERSTOOD is present: YES
+- SCOPE lists all Phase 1 files actually read, in order: YES
+- CITATION_CHECK answers all required checks: YES
+- RISKS are objective: YES
+- QUESTIONS are objective approval requests or clarifications only: YES
+- NEXT follows phase2_plan_template.md exactly: YES
+- no Phase 2 file is described as missing from phase1_pack: YES
+```
+
+If any check fails, revise before answering. Do not ask the human to notice the omission.
+"""
+
+
+def write_step_checks(path: Path, source: Path, out: Path) -> None:
+    path.write_text(step_checks_markdown(source, out), encoding="utf-8")
+
+
 def insert_section_once(path: Path, marker: str, section: str, after_heading: str | None = None) -> None:
     if not path.is_file():
         return
@@ -230,6 +344,60 @@ def insert_section_once(path: Path, marker: str, section: str, after_heading: st
     path.write_text(text, encoding="utf-8")
 
 
+def step_checks_reference() -> str:
+    return """## ACG Step Self-Checks
+
+Before progressing between ACG stages, read `artifacts/step_checks.md` and apply the matching check block:
+
+- `MASTER_CHECK` after `ACG_MASTER.md`.
+- `PHASE1_ORDER_CHECK` after `phase1_reading_order.md`.
+- `CITATION_CHECK_PLAN` after `citation_check.md`.
+- `BOUNDARY_CHECK` before reading Phase 1 files.
+- `NEXT_SELF_CHECK` before producing `NEXT`.
+- `FINAL_COMPLETION_CHECK` before final answer.
+
+If any check fails, revise before answering.
+"""
+
+
+def patch_step_checks(out: Path) -> None:
+    artifacts = out / "artifacts"
+    marker = "## ACG Step Self-Checks"
+    ref = step_checks_reference()
+    insert_section_once(out / "ACG_MASTER.md", marker, ref, after_heading="## Read Order for AI")
+    insert_section_once(artifacts / "execution_brief.md", marker, ref, after_heading="## Required artifacts to inspect first")
+    insert_section_once(artifacts / "next_prompt.md", marker, ref, after_heading="## Expected Counts")
+    insert_section_once(artifacts / "completion_checklist.md", marker, ref)
+    insert_section_once(artifacts / "phase2_plan_template.md", marker, ref)
+
+    master = out / "ACG_MASTER.md"
+    if master.is_file():
+        text = master.read_text(encoding="utf-8")
+        if "artifacts/step_checks.md" not in text:
+            text = text.replace("3. Read `artifacts/phase1_reading_order.md`.", "3. Read `artifacts/step_checks.md`.\n4. Read `artifacts/phase1_reading_order.md`.")
+            master.write_text(text, encoding="utf-8")
+
+    report_path = artifacts / "scout_report.json"
+    if report_path.is_file():
+        report = load_json(report_path)
+        queues = load_json(artifacts / "reading_queues.json")
+        report["step_checks"] = {
+            "artifact": "artifacts/step_checks.md",
+            "required_blocks": [
+                "MASTER_CHECK",
+                "PHASE1_ORDER_CHECK",
+                "CITATION_CHECK_PLAN",
+                "BOUNDARY_CHECK",
+                "NEXT_SELF_CHECK",
+                "FINAL_COMPLETION_CHECK",
+            ],
+            "expected_phase1_files": len(queues.get("phase1_reading_order", [])) or len(queues.get("phase1", [])),
+            "expected_citation_checks": len(queues.get("citation_check", [])),
+            "required_phase2_fields": ["why needed", "question answered", "queue source", "risk"],
+        }
+        write_json(report_path, report)
+
+
 def patch_package_boundary(out: Path, source: Path) -> None:
     artifacts = out / "artifacts"
     section = boundary_markdown(source, out)
@@ -240,6 +408,7 @@ def patch_package_boundary(out: Path, source: Path) -> None:
     insert_section_once(artifacts / "next_prompt.md", marker, section, after_heading="## Expected Counts")
     insert_section_once(artifacts / "phase2_plan_template.md", marker, section)
     insert_section_once(artifacts / "completion_checklist.md", marker, section)
+    insert_section_once(artifacts / "step_checks.md", marker, section)
 
     checklist = artifacts / "completion_checklist.md"
     if checklist.is_file():
@@ -361,6 +530,8 @@ def main() -> int:
         t, _ = run_step("lexical_index", [sys.executable, str(scripts_dir / "acg-lexical-index.py"), "build", "--source", str(source), "--out", str(artifacts)])
         timings["lexical_index"] = t
 
+    write_step_checks(artifacts / "step_checks.md", source, out)
+
     started = time.perf_counter()
     payload = build_context_payload(source, out, args.model_budget_tokens)
     write_json(artifacts / "context_payload.json", payload)
@@ -368,12 +539,14 @@ def main() -> int:
 
     indexed_code_files = count_code_files(source)
     patch_package_boundary(out, source)
+    patch_step_checks(out)
     patch_v04_context_notes(out)
     write_performance_report(artifacts / "performance_report.md", timings, source, out, cache_hit, indexed_code_files)
 
     print(f"ACG v0.4 complete: {out}")
     print(f"Master file: {out / 'ACG_MASTER.md'}")
     print(f"Execution brief: {artifacts / 'execution_brief.md'}")
+    print(f"Step checks: {artifacts / 'step_checks.md'}")
     print(f"Completion checklist: {artifacts / 'completion_checklist.md'}")
     print(f"Context payload: {artifacts / 'context_payload.json'}")
     print(f"Performance report: {artifacts / 'performance_report.md'}")
