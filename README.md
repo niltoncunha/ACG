@@ -19,6 +19,7 @@ vague request
   -> topology-aware context package when code exists
   -> readiness gate
   -> ordered Phase 1 reading
+  -> step self-checks
   -> citation check
   -> bounded Phase 2 plan
   -> scoped AI work
@@ -56,7 +57,7 @@ Direct Structure Scout run:
 python scripts/acg-scout.py --source /path/to/project --out .acg
 ```
 
-ACG v0.4-beta keeps the v0.3/v0.4 package layout usable while adding ownership-aware hotpath ranking, adaptive project kind detection, readiness subscores, mapping gates, explicit Phase 1 reading order and citation checks.
+ACG v0.4-beta keeps the v0.3/v0.4 package layout usable while adding ownership-aware hotpath ranking, adaptive project kind detection, readiness subscores, mapping gates, explicit Phase 1 reading order, step self-checks and citation checks.
 
 ---
 
@@ -75,7 +76,9 @@ ACG v0.4-beta keeps the v0.3/v0.4 package layout usable while adding ownership-a
     reading_queues.json
     phase1_queue.md
     phase1_reading_order.md
+    step_checks.md
     citation_check.md
+    completion_checklist.md
     phase2_queue.md
     approval_required.md
     search_targets.md
@@ -96,7 +99,7 @@ The AI entrypoint is always:
 Open .acg/ACG_MASTER.md first and follow it exactly.
 ```
 
-The human should not need to invent the next prompt. `ACG_MASTER.md`, `phase1_reading_order.md`, `citation_check.md`, `next_prompt.md`, and `phase2_plan_template.md` drive the next bounded step.
+The human should not need to invent the next prompt. `ACG_MASTER.md`, `phase1_reading_order.md`, `step_checks.md`, `citation_check.md`, `completion_checklist.md`, `next_prompt.md`, and `phase2_plan_template.md` drive the next bounded step.
 
 ---
 
@@ -119,11 +122,45 @@ all files
   -> readiness_gate
   -> scout_regime
   -> reading queues
+  -> step self-checks
   -> citation checks
   -> controlled phase packs
 ```
 
 Then the AI reads only the right subset, in the right order, with explicit limits.
+
+---
+
+## Step self-checks
+
+ACG now generates:
+
+```txt
+artifacts/step_checks.md
+```
+
+This file forces the AI to run concrete checks between stages:
+
+```txt
+MASTER_CHECK
+PHASE1_ORDER_CHECK
+CITATION_CHECK_PLAN
+BOUNDARY_CHECK
+NEXT_SELF_CHECK
+FINAL_COMPLETION_CHECK
+```
+
+These are not vague "do you understand?" prompts. They require the AI to report operational facts such as:
+
+- current package root;
+- allowed Phase 1 roots;
+- expected Phase 1 file count;
+- expected citation check count;
+- Phase 2 queue is metadata only;
+- Phase 2 files are not missing because absent from `phase1_pack/`;
+- every requested Phase 2 file has `why needed`, `question answered`, `queue source`, and `risk`.
+
+If any check fails, the AI must revise before answering.
 
 ---
 
@@ -205,7 +242,9 @@ The generated package includes:
 
 ```txt
 artifacts/phase1_reading_order.md
+artifacts/step_checks.md
 artifacts/citation_check.md
+artifacts/completion_checklist.md
 ```
 
 The AI must return:
@@ -219,7 +258,7 @@ QUESTIONS: objective questions or approval requests only
 NEXT: bounded Phase 2 plan or clarification questions
 ```
 
-This does not prove perfect understanding, but it reduces shallow self-reporting.
+This does not prove perfect understanding, but it reduces shallow self-reporting and catches repeated structural omissions.
 
 ---
 
@@ -250,6 +289,7 @@ It produces:
 - strategy per file: `open_now`, `open_later`, `search_only`, `index_only`, `human_only`, `terminal_asset`, `ignore`;
 - compact phase queues;
 - ordered Phase 1 reading plan;
+- step self-checks;
 - citation checks;
 - search-only targets;
 - controlled Phase 1 pack;
@@ -336,7 +376,7 @@ ACG has two different kinds of control:
 | Layer | Type |
 |---|---|
 | `ACG_MASTER.md`, queues, prompts | cooperative guidance |
-| `phase1_reading_order.md`, `citation_check.md` | cooperative proof-of-reading friction |
+| `phase1_reading_order.md`, `step_checks.md`, `citation_check.md`, `completion_checklist.md` | cooperative proof-of-reading / proof-of-procedure friction |
 | `acg-enforce.py`, CI, branch/scope checks | mechanical enforcement |
 | `acg-gateway.py` | advisory gateway when the agent uses it |
 
