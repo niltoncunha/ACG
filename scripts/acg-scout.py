@@ -11,7 +11,7 @@ Design rules:
 - keep tool runtimes/dependencies out of the main project hotpath;
 - build import topology only from PROJECT_OWNED source files;
 - classify project_kind before readiness;
-- require Phase 1 reading order and citation checks.
+- require Phase 1 reading order, citation checks, and completion checklist.
 """
 from __future__ import annotations
 
@@ -68,7 +68,12 @@ STRUCTURAL_CONTRACT_NAMES = {"system_law.md", "memory_contract.md", "environment
 DATASET_CONTROL_NAMES = {"manifest.md", "manifest.json", "schema.json", "schema.yaml", "dataset.json", "metadata.json", "readme.md"}
 ENTRYPOINT_RE = re.compile(r"(^|[\\/])(main\.py|main\.go|main\.rs|index\.[jt]sx?|app\.py|server\.py|__main__\.py|cmd[\\/]main\.go|src[\\/]main\.rs|bin[\\/]main\.rs)$", re.I)
 
-LEGACY_ROOT_ARTIFACTS = {"context_manifest.jsonl", "structure_map.md", "hotpaths.json", "reading_queues.json", "search_targets.md", "execution_brief.md", "next_prompt.md", "phase1_queue.md", "phase2_queue.md", "approval_required.md", "phase2_plan_template.md", "scout_report.json", "phase1_reading_order.md", "citation_check.md"}
+LEGACY_ROOT_ARTIFACTS = {
+    "context_manifest.jsonl", "structure_map.md", "hotpaths.json", "reading_queues.json",
+    "search_targets.md", "execution_brief.md", "next_prompt.md", "phase1_queue.md",
+    "phase2_queue.md", "approval_required.md", "phase2_plan_template.md", "scout_report.json",
+    "phase1_reading_order.md", "citation_check.md", "completion_checklist.md",
+}
 
 CRITICAL_NAME_WEIGHTS = {
     "agents.md": 42, "active-index.md": 40, "start.here.md": 40, "manifest.md": 34,
@@ -625,7 +630,6 @@ def infer_project_kind(entries: list[FileEntry], graph_stats: dict[str, object])
     data_ratio = counts["data_files"] / project_files
     agent_score = counts["orientation_files"] + counts["contract_files"]
     code_score = counts["code_files"] + 4 * counts["control_files"] + 4 * counts["entrypoint_files"]
-
     if runtime_ratio >= 0.75 and counts["project_files"] < max(20, int(total * 0.10)):
         return "TOOL_RUNTIME"
     if data_ratio >= 0.45 and counts["data_files"] >= max(10, counts["code_files"] * 2):
@@ -799,6 +803,40 @@ def build_citation_check(reading_order: list[dict[str, object]], max_items: int 
         checks.append({"file": file, "check": citation_prompt_for(file), "required": True})
     return checks
 
+def completion_checklist_text(phase1_count: int, citation_count: int, phase2_count: int) -> str:
+    return f"""# ACG Completion Checklist
+
+Before final Phase 1 output, verify every item below.
+
+## Expected Counts
+
+- Expected Phase 1 files in SCOPE: {phase1_count}
+- Expected citation checks: {citation_count}
+- Safe Phase 2 candidates available: {phase2_count}
+- Required fields per requested Phase 2 file: 4
+
+## Required Output Sections
+
+- [ ] `ACG-UNDERSTOOD: structure-scout` is present.
+- [ ] `SCOPE` lists all Phase 1 files actually read, in order.
+- [ ] `CITATION_CHECK` answers every required item from `citation_check.md`.
+- [ ] `RISKS` contains objective risks only.
+- [ ] `QUESTIONS` contains only objective approval requests or clarifications.
+- [ ] `NEXT` follows `phase2_plan_template.md` exactly.
+- [ ] `Decision` is `WAITING_FOR_HUMAN_APPROVAL`.
+
+## Required Fields Per Phase 2 Requested File
+
+For every file listed under `Exact files requested`, include all four fields:
+
+- [ ] why needed
+- [ ] question answered
+- [ ] queue source
+- [ ] risk
+
+If any item is incomplete, revise before answering. Do not ask the human to notice the omission.
+"""
+
 def write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -827,7 +865,13 @@ def build_queues(entries: list[FileEntry], phase1_max_files: int, phase1_max_byt
     phase1_dicts = [asdict(e) for e in phase1]
     reading_order = build_phase1_reading_order(phase1_dicts)
     citation_check = build_citation_check(reading_order)
-    return {"phase1": phase1_dicts, "phase1_total_bytes": total, "phase1_reading_order": reading_order, "citation_check": citation_check, "phase2": [asdict(e) for e in phase2], "approval_required": [asdict(e) for e in approval_required], "search_targets": [asdict(e) for e in search_targets], "human_only": [asdict(e) for e in hot if e.strategy == "human_only"], "ignored": [asdict(e) for e in hot if e.strategy == "ignore"]}
+    checklist = {
+        "expected_phase1_files": len(reading_order),
+        "expected_citation_checks": len(citation_check),
+        "safe_phase2_candidates": len(phase2),
+        "required_fields_per_phase2_file": ["why needed", "question answered", "queue source", "risk"],
+    }
+    return {"phase1": phase1_dicts, "phase1_total_bytes": total, "phase1_reading_order": reading_order, "citation_check": citation_check, "completion_checklist": checklist, "phase2": [asdict(e) for e in phase2], "approval_required": [asdict(e) for e in approval_required], "search_targets": [asdict(e) for e in search_targets], "human_only": [asdict(e) for e in hot if e.strategy == "human_only"], "ignored": [asdict(e) for e in hot if e.strategy == "ignore"]}
 
 def write_queue_markdown(path: Path, title: str, description: str, items: list[dict[str, object]]) -> None:
     lines = [f"# {title}", "", description, "", "| # | File | Owner | Role | Family | Score | In | Risk | Strategy |", "|---:|---|---|---|---|---:|---:|---:|---|"]
@@ -862,12 +906,17 @@ def write_citation_check(path: Path, checks: list[dict[str, object]]) -> None:
         lines.append(f"| `{item['file']}` | {item['check']} |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+def write_completion_checklist(path: Path, queues: dict[str, object]) -> None:
+    text = completion_checklist_text(len(queues.get("phase1_reading_order", [])), len(queues.get("citation_check", [])), len(queues.get("phase2", [])))
+    path.write_text(text, encoding="utf-8")
+
 def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queues: dict[str, object], graph_stats: dict[str, object]) -> None:
     readiness = readiness_score(entries, graph_stats)
     mode = guardrail_mode(readiness)
     subs = graph_stats.get("readiness_subscores", {})
     gate = graph_stats.get("readiness_gate", {})
-    lines = ["# ACG Structure Map", "", f"Version: `{VERSION}`", f"Source: `{source}`", f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}", f"Total indexed files: {len(entries)}", f"Project kind: {graph_stats.get('project_kind')}", f"Scout regime: {graph_stats.get('scout_regime')}", f"Readiness score: {readiness} [{mode.upper()}]", f"Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})", "", "## Environment", "", f"- has_git: {graph_stats.get('environment', {}).get('has_git')}", f"- enforcement_level: {graph_stats.get('environment', {}).get('enforcement_level')}", "", "## Readiness Subscores", "", f"- code_readiness: {subs.get('code_readiness')}", f"- orientation_readiness: {subs.get('orientation_readiness')}", f"- dataset_readiness: {subs.get('dataset_readiness')}", f"- runtime_penalty: {subs.get('runtime_penalty')}", "", "## Project Roots", ""]
+    checklist = queues.get("completion_checklist", {})
+    lines = ["# ACG Structure Map", "", f"Version: `{VERSION}`", f"Source: `{source}`", f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}", f"Total indexed files: {len(entries)}", f"Project kind: {graph_stats.get('project_kind')}", f"Scout regime: {graph_stats.get('scout_regime')}", f"Readiness score: {readiness} [{mode.upper()}]", f"Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})", "", "## Completion Counts", "", f"- Expected Phase 1 files in SCOPE: {checklist.get('expected_phase1_files')}", f"- Expected citation checks: {checklist.get('expected_citation_checks')}", f"- Required fields per Phase 2 requested file: 4", "", "## Environment", "", f"- has_git: {graph_stats.get('environment', {}).get('has_git')}", f"- enforcement_level: {graph_stats.get('environment', {}).get('enforcement_level')}", "", "## Readiness Subscores", "", f"- code_readiness: {subs.get('code_readiness')}", f"- orientation_readiness: {subs.get('orientation_readiness')}", f"- dataset_readiness: {subs.get('dataset_readiness')}", f"- runtime_penalty: {subs.get('runtime_penalty')}", "", "## Project Roots", ""]
     for root in graph_stats.get("project_roots", []):
         lines.append(f"- `{root}`")
     lines += ["", "## Phase 1 Reading Order", ""]
@@ -949,6 +998,17 @@ Approval-required exceptions:
 Decision:
 WAITING_FOR_HUMAN_APPROVAL
 ```
+
+## Completion Checklist
+
+Before answering, verify every requested Phase 2 file has exactly these four fields:
+
+- why needed
+- question answered
+- queue source
+- risk
+
+If any requested file is missing one of these fields, revise before final answer.
 """, encoding="utf-8")
 
 def write_execution_brief(path: Path, queues: dict[str, object], entries: list[FileEntry], graph_stats: dict[str, object]) -> None:
@@ -957,7 +1017,8 @@ def write_execution_brief(path: Path, queues: dict[str, object], entries: list[F
     subs = graph_stats.get("readiness_subscores", {})
     gate = graph_stats.get("readiness_gate", {})
     env = graph_stats.get("environment", {})
-    lines = ["# ACG Execution Brief", "", f"You are operating under ACG Structure Scout v{VERSION}.", "", f"Project kind: {graph_stats.get('project_kind')}", f"Scout regime: {graph_stats.get('scout_regime')}", f"Readiness: {readiness} [{mode.upper()}]", f"Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})", f"Environment: enforcement_level={env.get('enforcement_level')}, has_git={env.get('has_git')}", f"Readiness subscores: code={subs.get('code_readiness')}, orientation={subs.get('orientation_readiness')}, dataset={subs.get('dataset_readiness')}", "", "Ownership-aware import graph scoring is active.", "Only PROJECT_OWNED source files are included in the main import graph.", "Do not proceed to execution if readiness_gate.status is failed.", "Phase 1 is not complete until reading order is followed and citation checks are answered.", "", "## Required artifacts to inspect first", "", "- `../ACG_MASTER.md`", "- `execution_brief.md`", "- `phase1_reading_order.md`", "- `citation_check.md`", "- `next_prompt.md`", "- `phase2_plan_template.md`", "- `structure_map.md`", "- `phase1_queue.md`", "- `phase2_queue.md`", "- `approval_required.md`", "- `search_targets.md`", "- `../phase1_pack/`", "", "## Phase 1 Reading Order", ""]
+    checklist = queues.get("completion_checklist", {})
+    lines = ["# ACG Execution Brief", "", f"You are operating under ACG Structure Scout v{VERSION}.", "", f"Project kind: {graph_stats.get('project_kind')}", f"Scout regime: {graph_stats.get('scout_regime')}", f"Readiness: {readiness} [{mode.upper()}]", f"Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})", f"Environment: enforcement_level={env.get('enforcement_level')}, has_git={env.get('has_git')}", f"Readiness subscores: code={subs.get('code_readiness')}, orientation={subs.get('orientation_readiness')}, dataset={subs.get('dataset_readiness')}", "", "Ownership-aware import graph scoring is active.", "Only PROJECT_OWNED source files are included in the main import graph.", "Do not proceed to execution if readiness_gate.status is failed.", "Phase 1 is not complete until reading order is followed, citation checks are answered, and completion_checklist.md passes.", "", "## Expected Completion Counts", "", f"- Expected Phase 1 files in SCOPE: {checklist.get('expected_phase1_files')}", f"- Expected citation checks: {checklist.get('expected_citation_checks')}", "- Required fields per Phase 2 requested file: 4", "", "## Required artifacts to inspect first", "", "- `../ACG_MASTER.md`", "- `execution_brief.md`", "- `phase1_reading_order.md`", "- `citation_check.md`", "- `completion_checklist.md`", "- `next_prompt.md`", "- `phase2_plan_template.md`", "- `structure_map.md`", "- `phase1_queue.md`", "- `phase2_queue.md`", "- `approval_required.md`", "- `search_targets.md`", "- `../phase1_pack/`", "", "## Phase 1 Reading Order", ""]
     for item in queues.get("phase1_reading_order", []):
         lines.append(f"{item['step']}. `{item['file']}` - {item['reason']}")
     lines += ["", "## Citation Check", ""]
@@ -967,10 +1028,11 @@ def write_execution_brief(path: Path, queues: dict[str, object], entries: list[F
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 def write_next_prompt(path: Path, queues: dict[str, object]) -> None:
-    lines = ["# ACG Continuation Protocol", "", "This file is not a human copy/paste prompt.", "The AI must read this file before Phase 1 and apply it automatically after Phase 1.", "Phase 1 is incomplete unless `phase1_reading_order.md` is followed and `citation_check.md` is answered.", "", "## Current safe Phase 2 candidates", ""]
+    checklist = queues.get("completion_checklist", {})
+    lines = ["# ACG Continuation Protocol", "", "This file is not a human copy/paste prompt.", "The AI must read this file before Phase 1 and apply it automatically after Phase 1.", "Phase 1 is incomplete unless `phase1_reading_order.md` is followed, `citation_check.md` is answered, and `completion_checklist.md` passes.", "", "## Expected Counts", "", f"- Expected Phase 1 files in SCOPE: {checklist.get('expected_phase1_files')}", f"- Expected citation checks: {checklist.get('expected_citation_checks')}", "- Required fields per Phase 2 requested file: 4", "", "## Current safe Phase 2 candidates", ""]
     for item in queues.get("phase2", []):
         lines.append(f"- `{item['relative_path']}` - {item.get('ownership_class', '-')}, {item['role']}, score {item['hotpath_score']}, in_degree {item.get('in_degree', 0)}")
-    lines += ["", "Return NEXT using `phase2_plan_template.md` exactly."]
+    lines += ["", "Return NEXT using `phase2_plan_template.md` exactly. Before final answer, run `completion_checklist.md` against your response."]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dict[str, object], graph_stats: dict[str, object]) -> None:
@@ -978,10 +1040,11 @@ def write_master(path: Path, source: Path, entries: list[FileEntry], queues: dic
     mode = guardrail_mode(readiness)
     gate = graph_stats.get("readiness_gate", {})
     env = graph_stats.get("environment", {})
-    lines = ["# ACG Master Context File", "", f"Generated by ACG Structure Scout v{VERSION}.", "", "This is the root instruction file for the generated ACG context package.", "", "## Source", "", f"`{source}`", "", "## Inventory Summary", "", f"- Total indexed files: {len(entries)}", f"- Project kind: {graph_stats.get('project_kind')}", f"- Scout regime: {graph_stats.get('scout_regime')}", f"- Environment enforcement level: {env.get('enforcement_level')}", f"- Phase 1 files: {len(queues.get('phase1', []))}", f"- Safe Phase 2 candidates: {len(queues.get('phase2', []))}", f"- Search-only / terminal assets: {len(queues.get('search_targets', []))}", f"- Import graph nodes: {graph_stats.get('nodes', 0)}", f"- Import graph edges: {graph_stats.get('total_edges', 0)}", f"- Max in-degree: {graph_stats.get('max_in_degree', 0)}", f"- Readiness score: {readiness} [{mode.upper()}]", f"- Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})", "", "## Project Roots", ""]
+    checklist = queues.get("completion_checklist", {})
+    lines = ["# ACG Master Context File", "", f"Generated by ACG Structure Scout v{VERSION}.", "", "This is the root instruction file for the generated ACG context package.", "", "## Source", "", f"`{source}`", "", "## Inventory Summary", "", f"- Total indexed files: {len(entries)}", f"- Project kind: {graph_stats.get('project_kind')}", f"- Scout regime: {graph_stats.get('scout_regime')}", f"- Environment enforcement level: {env.get('enforcement_level')}", f"- Phase 1 files: {len(queues.get('phase1', []))}", f"- Safe Phase 2 candidates: {len(queues.get('phase2', []))}", f"- Search-only / terminal assets: {len(queues.get('search_targets', []))}", f"- Import graph nodes: {graph_stats.get('nodes', 0)}", f"- Import graph edges: {graph_stats.get('total_edges', 0)}", f"- Max in-degree: {graph_stats.get('max_in_degree', 0)}", f"- Readiness score: {readiness} [{mode.upper()}]", f"- Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})", "", "## Completion Counts", "", f"- Expected Phase 1 files in SCOPE: {checklist.get('expected_phase1_files')}", f"- Expected citation checks: {checklist.get('expected_citation_checks')}", "- Required fields per Phase 2 requested file: 4", "", "## Project Roots", ""]
     for root in graph_stats.get("project_roots", []):
         lines.append(f"- `{root}`")
-    lines += ["", "## Read Order for AI", "", "1. Read this file: `ACG_MASTER.md`.", "2. Read `artifacts/execution_brief.md`.", "3. Read `artifacts/phase1_reading_order.md`.", "4. Read `artifacts/citation_check.md`.", "5. Read `artifacts/next_prompt.md`.", "6. Read `artifacts/phase2_plan_template.md`.", "7. Read `artifacts/structure_map.md`.", "8. Read `artifacts/phase1_queue.md` and `artifacts/phase2_queue.md`.", "9. Read `artifacts/approval_required.md` and `artifacts/search_targets.md`.", "10. Read only files copied inside `phase1_pack/`, in the order defined by `phase1_reading_order.md`.", "", "## Do Not Do", "", "- Do not read the original source folder blindly.", "- Do not open terminal assets directly.", "- Do not read non-PROJECT_OWNED files unless explicitly approved.", "- Do not edit files during orientation.", "- Do not claim Phase 1 completion without answering citation_check.md.", "- Do not ask vague questions such as 'what next?'."]
+    lines += ["", "## Read Order for AI", "", "1. Read this file: `ACG_MASTER.md`.", "2. Read `artifacts/execution_brief.md`.", "3. Read `artifacts/phase1_reading_order.md`.", "4. Read `artifacts/citation_check.md`.", "5. Read `artifacts/completion_checklist.md`.", "6. Read `artifacts/next_prompt.md`.", "7. Read `artifacts/phase2_plan_template.md`.", "8. Read `artifacts/structure_map.md`.", "9. Read `artifacts/phase1_queue.md` and `artifacts/phase2_queue.md`.", "10. Read `artifacts/approval_required.md` and `artifacts/search_targets.md`.", "11. Read only files copied inside `phase1_pack/`, in the order defined by `phase1_reading_order.md`.", "", "## Do Not Do", "", "- Do not read the original source folder blindly.", "- Do not open terminal assets directly.", "- Do not read non-PROJECT_OWNED files unless explicitly approved.", "- Do not edit files during orientation.", "- Do not claim Phase 1 completion without answering citation_check.md.", "- Do not return NEXT with incomplete per-file fields.", "- Do not ask vague questions such as 'what next?'."]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 def cleanup_legacy_root_artifacts(out: Path) -> None:
@@ -1006,6 +1069,7 @@ def write_scout_report(path: Path, source: Path, entries: list[FileEntry], queue
         "readiness_gate": graph_stats.get("readiness_gate"),
         "phase1_reading_order": queues.get("phase1_reading_order", []),
         "citation_check": queues.get("citation_check", []),
+        "completion_checklist": queues.get("completion_checklist", {}),
         "system_profile": {
             "total_files": len(entries), "language_map": dict(extensions), "ownership_summary": ownership_summary(entries),
             "project_roots": graph_stats.get("project_roots", []), "project_kind": graph_stats.get("project_kind"),
@@ -1022,6 +1086,7 @@ def write_scout_report(path: Path, source: Path, entries: list[FileEntry], queue
         "execution_brief": {
             "task_id": "structure-scout", "root": str(source), "total_files": len(entries), "readiness_score": readiness, "guardrail_mode": mode,
             "readiness_gate": graph_stats.get("readiness_gate"), "scout_regime": graph_stats.get("scout_regime"), "environment": graph_stats.get("environment"),
+            "completion_checklist": queues.get("completion_checklist", {}),
             "readiness_components": {
                 "project_kind": graph_stats.get("project_kind"), "subscores": graph_stats.get("readiness_subscores", {}),
                 "W1_executable_or_orientation_or_dataset_entrypoint": bool(graph_stats.get("has_entrypoint") or graph_stats.get("orientation_entrypoints") or graph_stats.get("dataset_metadata")),
@@ -1029,7 +1094,7 @@ def write_scout_report(path: Path, source: Path, entries: list[FileEntry], queue
                 "W3_open_now_count": len(queues.get("phase1", [])), "W4_broken_refs_count": 0,
             },
             "import_graph": {"total_edges": graph_stats.get("total_edges", 0), "max_in_degree": graph_stats.get("max_in_degree", 0), "hotpath_score_basis": graph_stats.get("hotpath_score_basis")},
-            "instruction": "Read Phase 1 files in phase1_reading_order. Answer citation_check. Then return ACG-UNDERSTOOD, SCOPE, CITATION_CHECK, RISKS, QUESTIONS, NEXT before any edit.",
+            "instruction": "Read Phase 1 files in phase1_reading_order. Answer citation_check. Run completion_checklist. Then return ACG-UNDERSTOOD, SCOPE, CITATION_CHECK, RISKS, QUESTIONS, NEXT before any edit.",
         },
         "context_manifest_ref": "context_manifest.jsonl",
     }
@@ -1066,6 +1131,7 @@ def main() -> int:
     write_queue_markdown(artifacts / "approval_required.md", "ACG Approval-Required Queue", "Files that require explicit human approval before reading.", queues["approval_required"])
     write_phase1_reading_order(artifacts / "phase1_reading_order.md", queues["phase1_reading_order"])
     write_citation_check(artifacts / "citation_check.md", queues["citation_check"])
+    write_completion_checklist(artifacts / "completion_checklist.md", queues)
     write_phase2_template(artifacts / "phase2_plan_template.md")
     write_structure_map(artifacts / "structure_map.md", source, entries, queues, graph_stats)
     write_search_targets(artifacts / "search_targets.md", queues)
@@ -1085,6 +1151,7 @@ def main() -> int:
     print(f"Ownership summary: {ownership_summary(entries)}")
     print(f"Phase 1 reading order: {len(queues.get('phase1_reading_order', []))}")
     print(f"Citation checks: {len(queues.get('citation_check', []))}")
+    print(f"Completion checklist: {artifacts / 'completion_checklist.md'}")
     print(f"Import graph nodes: {graph_stats.get('nodes', 0)}")
     print(f"Import graph edges: {graph_stats.get('total_edges', 0)}")
     print(f"Max in-degree: {graph_stats.get('max_in_degree', 0)}")
