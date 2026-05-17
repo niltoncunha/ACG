@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """ACG Structure Scout v0.4-beta.
 
-Stable package generator used by scripts/acg-v04.py.
+Generates the .acg context package used by AI agents.
 
 Public CLI:
   python scripts/acg-scout.py --source /path/to/project --out .acg
 
-Core behavior:
-- classify file ownership before ranking;
-- separate PROJECT_OWNED material from tool runtimes, dependencies, generated cache,
-  references, corpora and unknown external material;
-- build the main import graph only from PROJECT_OWNED source files;
+Design rules:
+- classify ownership before ranking;
+- keep tool runtimes/dependencies out of the main project hotpath;
+- build import topology only from PROJECT_OWNED source files;
 - classify project_kind before readiness;
-- generate mapping gates, phase reading order, citation checks, environment mode,
-  and scout regime so an agent cannot treat ACG-UNDERSTOOD as a shallow formality.
+- require Phase 1 reading order and citation checks.
 """
 from __future__ import annotations
 
@@ -37,10 +35,7 @@ MAX_IMPORT_PARSE_BYTES = 350_000
 SOURCE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs"}
 DOC_EXTENSIONS = {".md", ".txt", ".rst", ".adoc"}
 DATA_EXTENSIONS = {".csv", ".tsv", ".jsonl", ".parquet", ".arrow", ".feather", ".ndjson"}
-TEXT_EXTENSIONS = {
-    ".md", ".txt", ".rst", ".adoc", ".json", ".jsonl", ".yaml", ".yml", ".toml",
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".sh", ".ps1",
-}
+TEXT_EXTENSIONS = DOC_EXTENSIONS | {".json", ".jsonl", ".yaml", ".yml", ".toml", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".sh", ".ps1"}
 BINARY_OR_DATABASE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".pkl", ".pickle"}
 
 PRUNE_DIR_NAMES = {
@@ -67,26 +62,14 @@ PROJECT_MARKER_DIRS = {
     "01-canon", "02_memory", "02-memory", "03_profiles", "03-profiles", "04_eval",
     "04-eval", "06_runtime_guides", "06-runtime-guides",
 }
-CONTROL_FILE_NAMES = {
-    "acg.yaml", "acg.json", "package.json", "pyproject.toml", "cargo.toml", "go.mod",
-    "makefile", "dockerfile", "docker-compose.yml", "docker-compose.yaml",
-    "requirements.txt", "setup.py", "setup.cfg", "tsconfig.json",
-}
+CONTROL_FILE_NAMES = {"acg.yaml", "acg.json", "package.json", "pyproject.toml", "cargo.toml", "go.mod", "makefile", "dockerfile", "docker-compose.yml", "docker-compose.yaml", "requirements.txt", "setup.py", "setup.cfg", "tsconfig.json"}
 ORIENTATION_ENTRYPOINT_NAMES = {"agents.md", "active-index.md", "start.here.md", "manifest.md", "visible_workspace_map.md", "readme.md"}
-STRUCTURAL_CONTRACT_NAMES = {
-    "system_law.md", "memory_contract.md", "environment_contract.md", "agents.md",
-    "active-index.md", "manifest.md", "start.here.md", "visible_workspace_map.md",
-    "genio.active.set.md", "genio.cleanup.map.md", "genio.nucleus.core.md",
-}
+STRUCTURAL_CONTRACT_NAMES = {"system_law.md", "memory_contract.md", "environment_contract.md", "agents.md", "active-index.md", "manifest.md", "start.here.md", "visible_workspace_map.md", "genio.active.set.md", "genio.cleanup.map.md", "genio.nucleus.core.md"}
 DATASET_CONTROL_NAMES = {"manifest.md", "manifest.json", "schema.json", "schema.yaml", "dataset.json", "metadata.json", "readme.md"}
 ENTRYPOINT_RE = re.compile(r"(^|[\\/])(main\.py|main\.go|main\.rs|index\.[jt]sx?|app\.py|server\.py|__main__\.py|cmd[\\/]main\.go|src[\\/]main\.rs|bin[\\/]main\.rs)$", re.I)
 
-LEGACY_ROOT_ARTIFACTS = {
-    "context_manifest.jsonl", "structure_map.md", "hotpaths.json", "reading_queues.json",
-    "search_targets.md", "execution_brief.md", "next_prompt.md", "phase1_queue.md",
-    "phase2_queue.md", "approval_required.md", "phase2_plan_template.md", "scout_report.json",
-    "phase1_reading_order.md", "citation_check.md",
-}
+LEGACY_ROOT_ARTIFACTS = {"context_manifest.jsonl", "structure_map.md", "hotpaths.json", "reading_queues.json", "search_targets.md", "execution_brief.md", "next_prompt.md", "phase1_queue.md", "phase2_queue.md", "approval_required.md", "phase2_plan_template.md", "scout_report.json", "phase1_reading_order.md", "citation_check.md"}
+
 CRITICAL_NAME_WEIGHTS = {
     "agents.md": 42, "active-index.md": 40, "start.here.md": 40, "manifest.md": 34,
     "visible_workspace_map.md": 34, "readme.md": 22, "environment_contract.md": 38,
@@ -94,12 +77,7 @@ CRITICAL_NAME_WEIGHTS = {
     "runtime_execution.md": 30, "acg.yaml": 38, "package.json": 30, "pyproject.toml": 30,
     "go.mod": 30, "cargo.toml": 30, "tsconfig.json": 26, "requirements.txt": 24,
 }
-FAMILY_HOTPATH = {
-    "core": 20, "canon": 18, "runtime": 16, "tests": 10, "docs": 8, "guides": 8,
-    "evaluation": 8, "reference": 5, "memory": 4, "dataset": 6, "legacy": 2,
-    "unknown": 6, "generated": 0, "logs": 0, "exports": 0, "secrets": 0,
-    "infra": 0, "migrations": 0,
-}
+FAMILY_HOTPATH = {"core": 20, "canon": 18, "runtime": 16, "tests": 10, "docs": 8, "guides": 8, "evaluation": 8, "reference": 5, "memory": 4, "dataset": 6, "legacy": 2, "unknown": 6, "generated": 0, "logs": 0, "exports": 0, "secrets": 0, "infra": 0, "migrations": 0}
 FAMILY_RULES = [
     (r"(^|/)90_legacy(/|$)|(^|/)90-legacy(/|$)|(^|/)legacy(/|$)|(^|/)archive|(^|/)_old(/|$)|(^|/)old(/|$)", "legacy", "terminal"),
     (r"(^|/)logs?(/|$)|\.log$", "logs", "terminal"),
@@ -644,19 +622,21 @@ def infer_project_kind(entries: list[FileEntry], graph_stats: dict[str, object])
     project_files = max(counts["project_files"], 1)
     runtime_ratio = counts["runtime_files"] / total
     code_ratio = counts["code_files"] / project_files
-    doc_ratio = counts["doc_files"] / project_files
     data_ratio = counts["data_files"] / project_files
     agent_score = counts["orientation_files"] + counts["contract_files"]
     code_score = counts["code_files"] + 4 * counts["control_files"] + 4 * counts["entrypoint_files"]
+
     if runtime_ratio >= 0.75 and counts["project_files"] < max(20, int(total * 0.10)):
         return "TOOL_RUNTIME"
     if data_ratio >= 0.45 and counts["data_files"] >= max(10, counts["code_files"] * 2):
         return "DATASET_OR_CORPUS"
-    if code_score >= 8 and agent_score >= 2:
+    if code_score >= 8 and agent_score >= 6:
         return "MIXED_REPO"
     if code_score >= 8 or (counts["code_files"] >= 10 and code_ratio >= 0.25):
         return "CODEBASE"
-    if agent_score >= 2 and doc_ratio >= max(0.30, code_ratio):
+    if agent_score >= 6:
+        return "AGENT_WORKSPACE"
+    if agent_score >= 2 and counts["orientation_files"] >= 1 and counts["contract_files"] >= 1:
         return "AGENT_WORKSPACE"
     if counts["doc_files"] >= 5 and counts["code_files"] <= max(2, counts["doc_files"] // 5):
         return "DOCUMENTATION_BUNDLE"
@@ -677,7 +657,14 @@ def readiness_subscores(entries: list[FileEntry], graph_stats: dict[str, object]
     dataset_entry = bool(graph_stats.get("dataset_entrypoints"))
     dataset_count_bonus = 0.25 if counts["data_files"] > 0 else 0.0
     dataset_score = round((0.30 if (dataset_entry or dataset_meta) else 0.0) + (0.25 if dataset_meta else 0.0) + dataset_count_bonus + common_w4, 3)
-    runtime_penalty = 0.20 if counts["runtime_files"] > max(counts["project_files"] * 3, 100) else 0.0
+    runtime_ratio = counts["runtime_files"] / max(counts["runtime_files"] + counts["project_files"], 1)
+    strong_orientation = orientation_score >= 0.65 and counts["orientation_files"] >= 1 and counts["contract_files"] >= 1
+    if strong_orientation and counts["project_files"] >= 50:
+        runtime_penalty = 0.0
+    elif counts["project_files"] < 50 and runtime_ratio > 0.75:
+        runtime_penalty = 0.20
+    else:
+        runtime_penalty = 0.0
     return {
         "code_readiness": max(0.0, min(1.0, code_score)),
         "orientation_readiness": max(0.0, min(1.0, orientation_score)),
@@ -840,17 +827,7 @@ def build_queues(entries: list[FileEntry], phase1_max_files: int, phase1_max_byt
     phase1_dicts = [asdict(e) for e in phase1]
     reading_order = build_phase1_reading_order(phase1_dicts)
     citation_check = build_citation_check(reading_order)
-    return {
-        "phase1": phase1_dicts,
-        "phase1_total_bytes": total,
-        "phase1_reading_order": reading_order,
-        "citation_check": citation_check,
-        "phase2": [asdict(e) for e in phase2],
-        "approval_required": [asdict(e) for e in approval_required],
-        "search_targets": [asdict(e) for e in search_targets],
-        "human_only": [asdict(e) for e in hot if e.strategy == "human_only"],
-        "ignored": [asdict(e) for e in hot if e.strategy == "ignore"],
-    }
+    return {"phase1": phase1_dicts, "phase1_total_bytes": total, "phase1_reading_order": reading_order, "citation_check": citation_check, "phase2": [asdict(e) for e in phase2], "approval_required": [asdict(e) for e in approval_required], "search_targets": [asdict(e) for e in search_targets], "human_only": [asdict(e) for e in hot if e.strategy == "human_only"], "ignored": [asdict(e) for e in hot if e.strategy == "ignore"]}
 
 def write_queue_markdown(path: Path, title: str, description: str, items: list[dict[str, object]]) -> None:
     lines = [f"# {title}", "", description, "", "| # | File | Owner | Role | Family | Score | In | Risk | Strategy |", "|---:|---|---|---|---|---:|---:|---:|---|"]
@@ -873,12 +850,6 @@ def family_summary(entries: list[FileEntry]) -> list[dict[str, object]]:
         rows.append({"family": family, "files": len(items), "avg_hotpath_score": round(sum(i.hotpath_score for i in items) / len(items), 1), "dominant_strategy": sorted(strategies.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]})
     return rows
 
-def ownership_summary(entries: list[FileEntry]) -> dict[str, int]:
-    out: dict[str, int] = defaultdict(int)
-    for e in entries:
-        out[e.ownership_class] += 1
-    return dict(sorted(out.items()))
-
 def write_phase1_reading_order(path: Path, order: list[dict[str, object]]) -> None:
     lines = ["# ACG Phase 1 Reading Order", "", "Read Phase 1 files in this order. Do not substitute your own order.", "", "| Step | File | Reason |", "|---:|---|---|"]
     for item in order:
@@ -896,20 +867,7 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
     mode = guardrail_mode(readiness)
     subs = graph_stats.get("readiness_subscores", {})
     gate = graph_stats.get("readiness_gate", {})
-    lines = [
-        "# ACG Structure Map", "", f"Version: `{VERSION}`", f"Source: `{source}`",
-        f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}",
-        f"Total indexed files: {len(entries)}", f"Project kind: {graph_stats.get('project_kind')}",
-        f"Scout regime: {graph_stats.get('scout_regime')}", f"Readiness score: {readiness} [{mode.upper()}]",
-        f"Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})",
-        "", "## Environment", "",
-        f"- has_git: {graph_stats.get('environment', {}).get('has_git')}",
-        f"- enforcement_level: {graph_stats.get('environment', {}).get('enforcement_level')}",
-        "", "## Readiness Subscores", "",
-        f"- code_readiness: {subs.get('code_readiness')}", f"- orientation_readiness: {subs.get('orientation_readiness')}",
-        f"- dataset_readiness: {subs.get('dataset_readiness')}", f"- runtime_penalty: {subs.get('runtime_penalty')}",
-        "", "## Project Roots", "",
-    ]
+    lines = ["# ACG Structure Map", "", f"Version: `{VERSION}`", f"Source: `{source}`", f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}", f"Total indexed files: {len(entries)}", f"Project kind: {graph_stats.get('project_kind')}", f"Scout regime: {graph_stats.get('scout_regime')}", f"Readiness score: {readiness} [{mode.upper()}]", f"Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})", "", "## Environment", "", f"- has_git: {graph_stats.get('environment', {}).get('has_git')}", f"- enforcement_level: {graph_stats.get('environment', {}).get('enforcement_level')}", "", "## Readiness Subscores", "", f"- code_readiness: {subs.get('code_readiness')}", f"- orientation_readiness: {subs.get('orientation_readiness')}", f"- dataset_readiness: {subs.get('dataset_readiness')}", f"- runtime_penalty: {subs.get('runtime_penalty')}", "", "## Project Roots", ""]
     for root in graph_stats.get("project_roots", []):
         lines.append(f"- `{root}`")
     lines += ["", "## Phase 1 Reading Order", ""]
@@ -935,8 +893,7 @@ def copy_phase1(out_dir: Path, queues: dict[str, object]) -> None:
         safe_rmtree(pack)
     pack.mkdir(parents=True, exist_ok=True)
     phase1_by_path = {str(item["relative_path"]): item for item in queues.get("phase1", [])}
-    ordered_paths = [str(item["file"]) for item in queues.get("phase1_reading_order", [])]
-    for rel in ordered_paths:
+    for rel in [str(item["file"]) for item in queues.get("phase1_reading_order", [])]:
         item = phase1_by_path.get(rel)
         if not item:
             continue
@@ -1000,20 +957,7 @@ def write_execution_brief(path: Path, queues: dict[str, object], entries: list[F
     subs = graph_stats.get("readiness_subscores", {})
     gate = graph_stats.get("readiness_gate", {})
     env = graph_stats.get("environment", {})
-    lines = [
-        "# ACG Execution Brief", "", f"You are operating under ACG Structure Scout v{VERSION}.", "",
-        f"Project kind: {graph_stats.get('project_kind')}", f"Scout regime: {graph_stats.get('scout_regime')}",
-        f"Readiness: {readiness} [{mode.upper()}]", f"Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})",
-        f"Environment: enforcement_level={env.get('enforcement_level')}, has_git={env.get('has_git')}",
-        f"Readiness subscores: code={subs.get('code_readiness')}, orientation={subs.get('orientation_readiness')}, dataset={subs.get('dataset_readiness')}",
-        "", "Ownership-aware import graph scoring is active.",
-        "Only PROJECT_OWNED source files are included in the main import graph.",
-        "Do not proceed to execution if readiness_gate.status is failed.",
-        "Phase 1 is not complete until reading order is followed and citation checks are answered.",
-        "", "## Required artifacts to inspect first", "",
-        "- `../ACG_MASTER.md`", "- `execution_brief.md`", "- `phase1_reading_order.md`", "- `citation_check.md`", "- `next_prompt.md`", "- `phase2_plan_template.md`", "- `structure_map.md`", "- `phase1_queue.md`", "- `phase2_queue.md`", "- `approval_required.md`", "- `search_targets.md`", "- `../phase1_pack/`",
-        "", "## Phase 1 Reading Order", "",
-    ]
+    lines = ["# ACG Execution Brief", "", f"You are operating under ACG Structure Scout v{VERSION}.", "", f"Project kind: {graph_stats.get('project_kind')}", f"Scout regime: {graph_stats.get('scout_regime')}", f"Readiness: {readiness} [{mode.upper()}]", f"Readiness gate: {gate.get('status')} (min={gate.get('min_required')}, actual={gate.get('actual')})", f"Environment: enforcement_level={env.get('enforcement_level')}, has_git={env.get('has_git')}", f"Readiness subscores: code={subs.get('code_readiness')}, orientation={subs.get('orientation_readiness')}, dataset={subs.get('dataset_readiness')}", "", "Ownership-aware import graph scoring is active.", "Only PROJECT_OWNED source files are included in the main import graph.", "Do not proceed to execution if readiness_gate.status is failed.", "Phase 1 is not complete until reading order is followed and citation checks are answered.", "", "## Required artifacts to inspect first", "", "- `../ACG_MASTER.md`", "- `execution_brief.md`", "- `phase1_reading_order.md`", "- `citation_check.md`", "- `next_prompt.md`", "- `phase2_plan_template.md`", "- `structure_map.md`", "- `phase1_queue.md`", "- `phase2_queue.md`", "- `approval_required.md`", "- `search_targets.md`", "- `../phase1_pack/`", "", "## Phase 1 Reading Order", ""]
     for item in queues.get("phase1_reading_order", []):
         lines.append(f"{item['step']}. `{item['file']}` - {item['reason']}")
     lines += ["", "## Citation Check", ""]
