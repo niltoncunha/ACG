@@ -11,6 +11,7 @@ Design:
   - ACG_MASTER.md becomes a minimal router.
   - Numbered artifacts hold separate contracts.
   - phase1_pack is data, never instruction authority.
+  - SCOPE must match the ReadFile trace, not just exist.
   - acg-response-lint.py is the judge, not model self-check.
 """
 from __future__ import annotations
@@ -25,6 +26,7 @@ CONTRACT_FILES = {
     "10": "10_AUTHORITY_RULES.md",
     "20": "20_PACKAGE_BOUNDARY.md",
     "30": "30_PHASE1_PLAN.md",
+    "35": "35_READ_TRACE_RULES.md",
     "40": "40_CITATION_CHECK.md",
     "50": "50_PHASE2_TEMPLATE.md",
     "60": "60_COMPLETION_GATES.md",
@@ -60,24 +62,22 @@ def boundary(source: Path, out: Path) -> dict[str, str]:
     }
 
 
-def phase1_order_lines(out: Path) -> str:
+def phase1_order_items(out: Path) -> list[dict]:
     queues = load_json(out / "artifacts" / "reading_queues.json")
     items = queues.get("phase1_reading_order") or []
     if not items:
         items = [{"step": i + 1, "file": item.get("relative_path", "<unknown>"), "reason": "Phase 1 queue"} for i, item in enumerate(queues.get("phase1", []))]
-    lines = []
-    for item in items:
-        lines.append(f"{item.get('step')}. `{item.get('file')}` - {item.get('reason', 'required Phase 1 file')}")
-    return "\n".join(lines)
+    return items
+
+
+def phase1_order_lines(out: Path) -> str:
+    return "\n".join(f"{item.get('step')}. `{item.get('file')}` - {item.get('reason', 'required Phase 1 file')}" for item in phase1_order_items(out))
 
 
 def citation_lines(out: Path) -> str:
     queues = load_json(out / "artifacts" / "reading_queues.json")
     items = queues.get("citation_check", [])
-    lines = []
-    for i, item in enumerate(items, 1):
-        lines.append(f"{i}. `{item.get('file')}` - {item.get('check')}")
-    return "\n".join(lines)
+    return "\n".join(f"{i}. `{item.get('file')}` - {item.get('check')}" for i, item in enumerate(items, 1))
 
 
 def response_contract(out: Path) -> str:
@@ -125,6 +125,12 @@ MASTER_CHECK:
 PHASE1_ORDER_CHECK:
 - expected Phase 1 files: {c['phase1_files']}
 - read in listed order: YES
+
+READ_TRACE_CHECK:
+- SCOPE is a lossless projection of actual ReadFile operations: YES
+- SCOPE uses canonical relative paths from phase1_pack: YES
+- no opened Phase 1 file omitted from SCOPE: YES
+- no un-opened Phase 1 file added to SCOPE: YES
 
 CITATION_CHECK_PLAN:
 - expected citation checks: {c['citation_checks']}
@@ -194,6 +200,7 @@ WAITING_FOR_HUMAN_APPROVAL
 
 CLOSING_GATE:
 - SCOPE present and auditable: YES
+- READ_TRACE consistency passed: YES
 - all required sections present: YES
 - NEXT template complete: YES
 - no phase1_pack persona adopted as response authority: YES
@@ -280,6 +287,32 @@ Read these files from `phase1_pack/` in order. Do not substitute your own order.
 After reading, `SCOPE:` must list every Phase 1 file actually read, in order.
 
 If `SCOPE:` is missing or incomplete, Phase 1 is invalid.
+"""
+
+
+def read_trace_rules(out: Path) -> str:
+    c = counts(out)
+    return f"""# ACG 35 Read Trace Rules
+
+`SCOPE:` is not just a list. It is the audit projection of actual `ReadFile` operations.
+
+Expected Phase 1 files: {c['phase1_files']}
+
+## Rules
+
+- `SCOPE:` must list the Phase 1 files actually opened from `phase1_pack/`.
+- `SCOPE:` must use canonical relative paths without the `phase1_pack/` prefix.
+- `SCOPE:` must preserve the reading order from `30_PHASE1_PLAN.md`.
+- Do not substitute semantically similar paths.
+- Do not normalize hyphen/underscore paths unless the actual opened path used that spelling.
+- Do not list files that were not opened.
+- Do not omit opened Phase 1 files.
+
+## Mechanical Validation
+
+When the raw tool log contains `ReadFile` lines, `acg-response-lint.py` extracts the read trace and compares it to `SCOPE:`.
+
+If `SCOPE:` diverges from the read trace, Phase 1 is invalid.
 """
 
 
@@ -381,6 +414,7 @@ CLOSING_GATE:
 - SELF_CHECKS present: YES
 - SCOPE present and auditable: YES
 - SCOPE lists all Phase 1 files actually read, in order: YES
+- READ_TRACE consistency passed: YES
 - CITATION_CHECK answered all {c['citation_checks']} required checks: YES
 - RISKS are objective: YES
 - QUESTIONS are objective approvals/clarifications only: YES
@@ -393,6 +427,8 @@ CLOSING_GATE:
 ```
 
 If `SCOPE:` is missing, Phase 1 is incomplete because the read set cannot be audited.
+
+If `SCOPE:` diverges from the read trace, Phase 1 is invalid.
 
 If any required section is missing, Phase 1 is invalid.
 
@@ -418,6 +454,7 @@ The response must pass at least these checks:
 - literal `OPENING_GATE:`
 - literal `SELF_CHECKS:`
 - literal `SCOPE:` with at least {c['phase1_files']} Phase 1 files
+- SCOPE matches the ReadFile trace when trace lines are present
 - literal `CITATION_CHECK:` with {c['citation_checks']} answers
 - literal `RISKS:`
 - literal `QUESTIONS:`
@@ -457,12 +494,13 @@ source_root:          {b['source_root']}
 2. `artifacts/10_AUTHORITY_RULES.md`
 3. `artifacts/20_PACKAGE_BOUNDARY.md`
 4. `artifacts/30_PHASE1_PLAN.md`
-5. `artifacts/40_CITATION_CHECK.md`
-6. `artifacts/50_PHASE2_TEMPLATE.md`
-7. `artifacts/60_COMPLETION_GATES.md`
-8. `artifacts/70_LINT_RULES.md`
-9. Supporting artifacts as needed: `structure_map.md`, `phase1_queue.md`, `phase2_queue.md`, `approval_required.md`, `search_targets.md`
-10. Phase 1 files inside `phase1_pack/`, in the order defined by `30_PHASE1_PLAN.md`
+5. `artifacts/35_READ_TRACE_RULES.md`
+6. `artifacts/40_CITATION_CHECK.md`
+7. `artifacts/50_PHASE2_TEMPLATE.md`
+8. `artifacts/60_COMPLETION_GATES.md`
+9. `artifacts/70_LINT_RULES.md`
+10. Supporting artifacts as needed: `structure_map.md`, `phase1_queue.md`, `phase2_queue.md`, `approval_required.md`, `search_targets.md`
+11. Phase 1 files inside `phase1_pack/`, in the order defined by `30_PHASE1_PLAN.md`
 
 ## Required Counts
 
@@ -481,6 +519,7 @@ required fields per requested Phase 2 file: 4
 - Do not search for Phase 2 files during Phase 1.
 - Phase 2 queue entries are metadata approval requests, not missing files.
 - If `SCOPE:` is missing, Phase 1 is invalid.
+- If `SCOPE:` diverges from the ReadFile trace, Phase 1 is invalid.
 - If any mandatory step is skipped, the ACG protocol has failed.
 - The model does not decide if it passed; `acg-response-lint.py` decides.
 """
@@ -493,6 +532,7 @@ def write_contracts(source: Path, out: Path) -> None:
         CONTRACT_FILES["10"]: authority_rules(),
         CONTRACT_FILES["20"]: package_boundary(source, out),
         CONTRACT_FILES["30"]: phase1_plan(out),
+        CONTRACT_FILES["35"]: read_trace_rules(out),
         CONTRACT_FILES["40"]: citation_check(out),
         CONTRACT_FILES["50"]: phase2_template(),
         CONTRACT_FILES["60"]: completion_gates(out),
@@ -500,9 +540,6 @@ def write_contracts(source: Path, out: Path) -> None:
     }
     for filename, content in contracts.items():
         (artifacts / filename).write_text(content, encoding="utf-8")
-
-    # Backward-compatible alias for older prompts/tools.
-    (artifacts / "00_RESPONSE_CONTRACT.md").write_text(contracts[CONTRACT_FILES["00"]], encoding="utf-8")
 
 
 def patch_report(source: Path, out: Path) -> None:
@@ -516,6 +553,7 @@ def patch_report(source: Path, out: Path) -> None:
         "contracts": [f"artifacts/{name}" for name in CONTRACT_FILES.values()],
         "phase1_pack_is_data_not_instruction": True,
         "mechanical_component_no_persona": True,
+        "read_trace_required": True,
         "lint_required": True,
     }
     report["response_contract"] = {
@@ -546,6 +584,7 @@ def patch(source: Path, out: Path) -> None:
     print(f"ACG split contracts applied: {out}")
     print(f"Master router: {out / 'ACG_MASTER.md'}")
     print(f"Response contract: {out / 'artifacts' / '00_RESPONSE_CONTRACT.md'}")
+    print(f"Read trace rules: {out / 'artifacts' / '35_READ_TRACE_RULES.md'}")
 
 
 def main() -> int:
