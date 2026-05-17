@@ -55,16 +55,30 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def load_counts(package: Path) -> dict[str, int]:
+def load_queues(package: Path) -> dict:
     queues_path = package / "artifacts" / "reading_queues.json"
     if not queues_path.is_file():
         raise FileNotFoundError(f"missing reading_queues.json: {queues_path}")
-    queues = load_json(queues_path)
+    return load_json(queues_path)
+
+
+def load_counts(package: Path) -> dict[str, int]:
+    queues = load_queues(package)
     return {
         "phase1_files": len(queues.get("phase1_reading_order", [])) or len(queues.get("phase1", [])),
         "citation_checks": len(queues.get("citation_check", [])),
         "phase2_candidates": len(queues.get("phase2", [])),
     }
+
+
+def expected_phase1_paths(package: Path) -> list[str]:
+    queues = load_queues(package)
+    items = queues.get("phase1_reading_order") or []
+    if items:
+        raw = [str(item.get("file", "")) for item in items]
+    else:
+        raw = [str(item.get("relative_path", "")) for item in queues.get("phase1", [])]
+    return [canonical_scope_path(p) for p in raw if p]
 
 
 def has_literal_line(text: str, literal: str) -> bool:
@@ -91,6 +105,78 @@ def count_list_items(block: str) -> int:
     return len(re.findall(r"(?m)^\s*(?:[-*]|\d+[.)])\s+\S", block))
 
 
+def normalize_path(raw: str) -> str:
+    p = raw.strip().strip('`').strip().strip('"').strip("'")
+    p = p.replace("\\", "/")
+    p = re.sub(r"^[A-Za-z]:/", "", p)
+    p = p.replace("…", "...")
+    p = re.sub(r"/\.\.\./", "/", p)
+    p = re.sub(r"(^|/)\.\.\.(/|$)", "/", p)
+    p = re.sub(r"/+", "/", p).strip("/")
+    return p
+
+
+def canonical_scope_path(raw: str) -> str:
+    p = normalize_path(raw)
+    markers = [
+        "phase1_pack/",
+        "workspace/agent_files/",
+        "agent_files/",
+    ]
+    for marker in markers:
+        idx = p.find(marker)
+        if idx >= 0:
+            p = p[idx + len(marker):] if marker != "phase1_pack/" else p[idx + len(marker):]
+            break
+    # If the model preserved workspace prefix from phase1_pack, keep it.
+    if p.startswith("workspace/"):
+        return p
+    # Common Gemini ellipsis outputs often lose the phase1_pack prefix but keep a tail.
+    if "/workspace/" in p:
+        return p[p.index("/workspace/") + 1:]
+    return p.strip("/")
+
+
+def extract_readfile_trace(text: str) -> list[str]:
+    paths: list[str] = []
+    for match in re.finditer(r"(?im)^\s*(?:[✓✔]\s*)?ReadFile\s+(.+?)\s*$", text):
+        raw = match.group(1).strip()
+        # Strip trailing annotations like arrow reads, but keep paths with spaces rare as-is.
+        raw = re.split(r"\s+→\s+|\s+-\s+", raw, maxsplit=1)[0].strip()
+        if "phase1_pack" in raw or "workspace" in raw or "agent_files" in raw:
+            paths.append(canonical_scope_path(raw))
+    # Keep only likely Phase 1 data files, not ACG artifacts.
+    return [p for p in paths if not p.startswith("artifacts/") and p != "ACG_MASTER.md" and not p.startswith(".acg")]
+
+
+def extract_scope_paths(scope_block: str) -> list[str]:
+    paths: list[str] = []
+    for line in scope_block.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-*]\s+", "", line)
+        line = re.sub(r"^\d+[.)]\s+", "", line)
+        line = line.strip()
+        if not line or line.startswith("<"):
+            continue
+        if ":" in line and not re.match(r"^[A-Za-z]:", line):
+            # Avoid parsing prose fields as paths.
+            continue
+        paths.append(canonical_scope_path(line))
+    return paths
+
+
+def ordered_unique(items: list[str]) -> list[str]:
+    seen = set()
+    out: list[str] = []
+    for item in items:
+        if item and item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
+
 def next_file_blocks(next_block: str) -> list[str]:
     exact_match = re.search(r"(?im)^\s*Exact files requested:\s*$", next_block)
     if not exact_match:
@@ -105,6 +191,39 @@ def next_file_blocks(next_block: str) -> list[str]:
         end = starts[i + 1].start() if i + 1 < len(starts) else len(body)
         blocks.append(body[match.start():end])
     return blocks
+
+
+def validate_read_trace(text: str, package: Path, scope_paths: list[str]) -> tuple[list[str], list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    read_trace = ordered_unique(extract_readfile_trace(text))
+    expected = ordered_unique(expected_phase1_paths(package))
+    scope_unique = ordered_unique(scope_paths)
+
+    if not read_trace:
+        warnings.append("No ReadFile trace detected; READ_TRACE consistency could not be mechanically checked.")
+        return errors, warnings, read_trace
+
+    # Restrict comparison to expected Phase 1 files when possible. This ignores repeated reads and supporting artifacts.
+    expected_set = set(expected)
+    read_phase1 = [p for p in read_trace if p in expected_set]
+
+    missing_from_scope = [p for p in read_phase1 if p not in scope_unique]
+    extra_in_scope = [p for p in scope_unique if p in expected_set and p not in read_phase1]
+
+    for path in missing_from_scope:
+        errors.append(f"READ_TRACE mismatch: ReadFile opened expected Phase 1 file but SCOPE omitted it: {path}")
+    for path in extra_in_scope:
+        errors.append(f"READ_TRACE mismatch: SCOPE listed expected Phase 1 file but no ReadFile trace opened it: {path}")
+
+    scope_expected_only = [p for p in scope_unique if p in expected_set]
+    if read_phase1 and scope_expected_only and read_phase1 != scope_expected_only:
+        errors.append("READ_TRACE order mismatch: SCOPE order does not match ReadFile order for expected Phase 1 files.")
+
+    if len(read_phase1) < len(expected):
+        warnings.append(f"ReadFile trace includes {len(read_phase1)} expected Phase 1 files; expected {len(expected)}.")
+
+    return errors, warnings, read_trace
 
 
 def lint_response(text: str, package: Path) -> dict[str, object]:
@@ -126,8 +245,13 @@ def lint_response(text: str, package: Path) -> dict[str, object]:
 
     scope = section_text(text, "SCOPE:", ["CITATION_CHECK:", "RISKS:", "QUESTIONS:", "NEXT:", "CLOSING_GATE:"])
     scope_count = count_list_items(scope)
+    scope_paths = extract_scope_paths(scope)
     if scope_count < counts["phase1_files"]:
         errors.append(f"SCOPE has {scope_count} listed files; expected at least {counts['phase1_files']} Phase 1 files.")
+
+    trace_errors, trace_warnings, read_trace = validate_read_trace(text, package, scope_paths)
+    errors.extend(trace_errors)
+    warnings.extend(trace_warnings)
 
     citations = section_text(text, "CITATION_CHECK:", ["RISKS:", "QUESTIONS:", "NEXT:", "CLOSING_GATE:"])
     citation_count = count_list_items(citations)
@@ -168,6 +292,8 @@ def lint_response(text: str, package: Path) -> dict[str, object]:
         "warnings": warnings,
         "counts": counts,
         "scope_count": scope_count,
+        "scope_paths": scope_paths,
+        "read_trace": read_trace,
         "citation_count": citation_count,
         "phase2_file_blocks": len(blocks),
     }
@@ -208,6 +334,7 @@ def main() -> int:
         print(f"scope_count: {result['scope_count']} / expected >= {result['counts']['phase1_files']}")
         print(f"citation_count: {result['citation_count']} / expected {result['counts']['citation_checks']}")
         print(f"phase2_file_blocks: {result['phase2_file_blocks']}")
+        print(f"read_trace_count: {len(result['read_trace'])}")
     return 0 if result["status"] == "PASS" else 1
 
 
