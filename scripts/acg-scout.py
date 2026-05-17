@@ -3,14 +3,18 @@
 
 Stable package generator used by scripts/acg-v04.py.
 
-Keeps the public CLI:
+Public CLI:
   python scripts/acg-scout.py --source /path/to/project --out .acg
 
-Main guarantees:
-- ownership-aware scan: PROJECT_OWNED files are separated from runtime/dependency/tooling noise;
-- import graph is built only for PROJECT_OWNED source files;
-- external files are capped and cannot win the main hotpath queue;
-- readiness is adaptive by project_kind, so agent/documentation workspaces are not treated as broken executable codebases.
+Core behavior:
+- classify file ownership before ranking;
+- separate PROJECT_OWNED material from tool runtimes, dependencies, generated cache,
+  references, corpora and unknown external material;
+- build the main import graph only from PROJECT_OWNED source files;
+- classify project_kind before readiness:
+  CODEBASE, AGENT_WORKSPACE, DOCUMENTATION_BUNDLE, MIXED_REPO,
+  DATASET_OR_CORPUS, TOOL_RUNTIME, UNKNOWN;
+- use the proper readiness ruler for the detected package kind.
 """
 from __future__ import annotations
 
@@ -32,8 +36,10 @@ VERSION = "0.4-beta"
 MAX_IMPORT_PARSE_BYTES = 350_000
 
 SOURCE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs"}
+DOC_EXTENSIONS = {".md", ".txt", ".rst", ".adoc"}
+DATA_EXTENSIONS = {".csv", ".tsv", ".jsonl", ".parquet", ".arrow", ".feather", ".ndjson"}
 TEXT_EXTENSIONS = {
-    ".md", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".toml",
+    ".md", ".txt", ".rst", ".adoc", ".json", ".jsonl", ".yaml", ".yml", ".toml",
     ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".sh", ".ps1",
 }
 BINARY_OR_DATABASE_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".pkl", ".pickle"}
@@ -44,10 +50,15 @@ PRUNE_DIR_NAMES = {
     "dist-packages", "target", ".gradle", ".mypy_cache", ".pytest_cache", ".ruff_cache",
 }
 ALLOWED_HIDDEN_DIRS = {".github"}
-DEPENDENCY_MARKERS = {"node_modules", ".pnpm", "bower_components", "site-packages", "dist-packages", "__pypackages__", "vendor", "vendors", "third_party", ".venv", "venv", "env"}
+
+DEPENDENCY_MARKERS = {
+    "node_modules", ".pnpm", "bower_components", "site-packages", "dist-packages",
+    "__pypackages__", "vendor", "vendors", "third_party", ".venv", "venv", "env",
+}
 TOOL_RUNTIME_MARKERS = {"runtimes", "runtime-cache", "toolchains", "plugins", "extensions", "cache", ".cache"}
 GENERATED_MARKERS = {"dist", "build", "coverage", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "generated", ".generated", "out", "outputs"}
 REFERENCE_MARKERS = {"refs", "reference", "references", "samples", "fixtures", "ssot"}
+DATASET_MARKERS = {"dataset", "datasets", "corpus", "corpora", "data", "datalake", "chat_exports", "exports"}
 
 PROJECT_MARKER_FILES = {
     "AGENTS.md", "README.md", "START.HERE.md", "MANIFEST.md", "VISIBLE_WORKSPACE_MAP.md",
@@ -74,6 +85,7 @@ STRUCTURAL_CONTRACT_NAMES = {
     "active-index.md", "manifest.md", "start.here.md", "visible_workspace_map.md",
     "genio.active.set.md", "genio.cleanup.map.md", "genio.nucleus.core.md",
 }
+DATASET_CONTROL_NAMES = {"manifest.md", "manifest.json", "schema.json", "schema.yaml", "dataset.json", "metadata.json", "readme.md"}
 ENTRYPOINT_RE = re.compile(r"(^|[\\/])(main\.py|main\.go|main\.rs|index\.[jt]sx?|app\.py|server\.py|__main__\.py|cmd[\\/]main\.go|src[\\/]main\.rs|bin[\\/]main\.rs)$", re.I)
 
 LEGACY_ROOT_ARTIFACTS = {
@@ -90,13 +102,15 @@ CRITICAL_NAME_WEIGHTS = {
 }
 FAMILY_HOTPATH = {
     "core": 20, "canon": 18, "runtime": 16, "tests": 10, "docs": 8, "guides": 8,
-    "evaluation": 8, "reference": 5, "memory": 4, "legacy": 2, "unknown": 6,
-    "generated": 0, "logs": 0, "exports": 0, "secrets": 0, "infra": 0, "migrations": 0,
+    "evaluation": 8, "reference": 5, "memory": 4, "dataset": 6, "legacy": 2,
+    "unknown": 6, "generated": 0, "logs": 0, "exports": 0, "secrets": 0,
+    "infra": 0, "migrations": 0,
 }
 FAMILY_RULES = [
     (r"(^|/)90_legacy(/|$)|(^|/)90-legacy(/|$)|(^|/)legacy(/|$)|(^|/)archive|(^|/)_old(/|$)|(^|/)old(/|$)", "legacy", "terminal"),
     (r"(^|/)logs?(/|$)|\.log$", "logs", "terminal"),
     (r"(^|/)chat_exports?(/|$)|(^|/)exports?(/|$)", "exports", "terminal"),
+    (r"(^|/)datasets?(/|$)|(^|/)corpus(/|$)|(^|/)corpora(/|$)|(^|/)data(/|$)", "dataset", "search_only"),
     (r"(^|/)ssot(/|$)|(^|/)refs(/|$)", "reference", "search_only"),
     (r"(^|/)dist(/|$)|(^|/)build(/|$)|\.cache(/|$)|__pycache__", "generated", "ignore"),
     (r"(^|/)\.env$|(^|/)\.env\.|(^|/)secrets?(/|$)", "secrets", "human_only"),
@@ -174,15 +188,21 @@ def matches_any_glob(rel: str, patterns: list[str]) -> bool:
     rel = normalize_rel(rel)
     return any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch("/" + rel, p) for p in patterns)
 
+def has_marker(rel: str, markers: set[str]) -> bool:
+    return bool({p.lower() for p in parts(rel)} & markers)
+
 def is_dependency_path(rel: str) -> bool:
     ps = {p.lower() for p in parts(rel)}
     return bool(ps & DEPENDENCY_MARKERS) or any(p.endswith(".dist-info") or p.endswith(".egg-info") for p in ps)
 
 def is_generated_path(rel: str) -> bool:
-    return bool({p.lower() for p in parts(rel)} & GENERATED_MARKERS)
+    return has_marker(rel, GENERATED_MARKERS)
 
 def is_reference_path(rel: str) -> bool:
-    return bool({p.lower() for p in parts(rel)} & REFERENCE_MARKERS)
+    return has_marker(rel, REFERENCE_MARKERS)
+
+def is_dataset_path(rel: str) -> bool:
+    return has_marker(rel, DATASET_MARKERS) or Path(rel.lower()).suffix in DATA_EXTENSIONS
 
 def is_tool_runtime_path(rel: str) -> bool:
     ps = parts(rel)
@@ -286,6 +306,8 @@ def classify_ownership(rel: str, project_roots: list[str]) -> Ownership:
         return Ownership("TOOL_RUNTIME", 0.05, False, "tool/runtime marker")
     if is_generated_path(rel):
         return Ownership("GENERATED_CACHE", 0.10, False, "generated/cache marker")
+    if is_dataset_path(rel):
+        return Ownership("REFERENCE_ASSET", 0.35, False, "dataset/corpus marker")
     if is_reference_path(rel):
         return Ownership("REFERENCE_ASSET", 0.35, False, "reference asset marker")
     if under_project_root(rel, project_roots):
@@ -398,6 +420,8 @@ def detect_role(rel: str, ext: str, family: str) -> tuple[str, list[str]]:
         return "database_or_binary_asset", ["database_or_binary_extension"]
     if name in ORIENTATION_ENTRYPOINT_NAMES:
         return "orientation", ["orientation_name"]
+    if name in DATASET_CONTROL_NAMES or ext in DATA_EXTENSIONS:
+        return "dataset_or_corpus", ["dataset_signal"]
     if "blueprint" in name or "structure_map" in name or "environment_contract" in name:
         return "architecture_or_contract", ["architecture_or_contract_name"]
     if name in CONTROL_FILE_NAMES or "schema" in name:
@@ -437,8 +461,8 @@ def heuristic_score(rel: str, size: int, ext: str, depth: int, family: str) -> t
         score += 8
     if family in TERMINAL_FAMILIES or family == "binary_or_database":
         score -= 45
-    if family == "reference":
-        score -= 25
+    if family in {"reference", "dataset"}:
+        score -= 20
     if family in HUMAN_ONLY_FAMILIES:
         score -= 35
     if size > 2_000_000:
@@ -474,7 +498,7 @@ def risk_score(size: int, family: str, ext: str, rel: str, own: Ownership) -> in
         risk += 80
     if family in TERMINAL_FAMILIES or family == "binary_or_database":
         risk += 45
-    if family == "reference":
+    if family in {"reference", "dataset"}:
         risk += 35
     if size > 2_000_000:
         risk += 40
@@ -499,6 +523,8 @@ def strategy_for(family: str, size: int, score: int, ext: str, risk: int, own: O
         return "ignore", False, False, False
     if family in {"logs", "exports"}:
         return "terminal_asset", False, False, True
+    if family == "dataset":
+        return "search_only", False, False, True
     if size > 2_000_000:
         return "terminal_asset", False, False, True
     if family == "reference" or size > 500_000:
@@ -525,6 +551,9 @@ def scan(source: Path, limit: int) -> tuple[list[FileEntry], dict[str, object]]:
     has_control_files = False
     orientation_entrypoints: set[str] = set()
     structural_contracts: set[str] = set()
+    dataset_entrypoints: set[str] = set()
+    dataset_metadata: set[str] = set()
+    dataset_control_names = {n.lower() for n in DATASET_CONTROL_NAMES}
     for path in paths:
         rel = path.relative_to(source).as_posix()
         st = path.stat()
@@ -546,6 +575,10 @@ def scan(source: Path, limit: int) -> tuple[list[FileEntry], dict[str, object]]:
                 orientation_entrypoints.add(rel)
             if name in STRUCTURAL_CONTRACT_NAMES or family in {"canon", "memory"} or "contract" in name or "law" in name:
                 structural_contracts.add(rel)
+            if name in dataset_control_names:
+                dataset_metadata.add(rel)
+            if family == "dataset" or ext in DATA_EXTENSIONS:
+                dataset_entrypoints.add(rel)
         entries.append(FileEntry(rel, str(path.resolve()).replace("\\", "/"), st.st_size, st.st_size, utc(st.st_mtime), ext, depth, family, tier, role, own.ownership_class, own.ownership_score, own.included_in_import_graph and ext in SOURCE_EXTENSIONS and rel in indegree, score, risk, in_deg, out_deg, topology, out_deg, strategy, open_ok, edit_ok, approval, False, family_reasons + role_reasons + score_reasons))
     graph_stats = {
         "total_edges": sum(len(v) for v in edges.values()),
@@ -556,16 +589,19 @@ def scan(source: Path, limit: int) -> tuple[list[FileEntry], dict[str, object]]:
         "has_control_files": has_control_files,
         "orientation_entrypoints": sorted(orientation_entrypoints),
         "structural_contracts": sorted(structural_contracts),
-        "hotpath_score_basis": "PROJECT_OWNED source_code: topology(60)+size(20)+family(20); external files capped",
+        "dataset_entrypoints": sorted(dataset_entrypoints),
+        "dataset_metadata": sorted(dataset_metadata),
+        "hotpath_score_basis": "PROJECT_OWNED source_code: topology(60)+size(20)+family(20); external/data/runtime files capped or search-only",
     }
     graph_stats["project_kind"] = infer_project_kind(entries, graph_stats)
+    graph_stats["readiness_subscores"] = readiness_subscores(entries, graph_stats)
     return entries, graph_stats
 
 def sort_hot(entries: Iterable[FileEntry]) -> list[FileEntry]:
     return sorted(entries, key=lambda e: (e.ownership_class != "PROJECT_OWNED", -e.hotpath_score, -e.in_degree, e.risk_score, e.depth, e.relative_path))
 
 def is_safe_read_candidate(entry: FileEntry) -> bool:
-    return entry.ownership_class == "PROJECT_OWNED" and entry.strategy in {"open_now", "open_later"} and not entry.requires_human_approval and entry.folder_family not in TERMINAL_FAMILIES and entry.folder_family not in HUMAN_ONLY_FAMILIES and entry.folder_family != "binary_or_database" and entry.extension in TEXT_EXTENSIONS
+    return entry.ownership_class == "PROJECT_OWNED" and entry.strategy in {"open_now", "open_later"} and not entry.requires_human_approval and entry.folder_family not in TERMINAL_FAMILIES and entry.folder_family not in HUMAN_ONLY_FAMILIES and entry.folder_family not in {"binary_or_database", "dataset"} and entry.extension in TEXT_EXTENSIONS
 
 def ownership_summary(entries: list[FileEntry]) -> dict[str, int]:
     out: dict[str, int] = defaultdict(int)
@@ -573,40 +609,96 @@ def ownership_summary(entries: list[FileEntry]) -> dict[str, int]:
         out[e.ownership_class] += 1
     return dict(sorted(out.items()))
 
-def infer_project_kind(entries: list[FileEntry], graph_stats: dict[str, object]) -> str:
+def kind_feature_counts(entries: list[FileEntry], graph_stats: dict[str, object]) -> dict[str, int]:
     project_entries = [e for e in entries if e.ownership_class == "PROJECT_OWNED"]
-    code_count = sum(1 for e in project_entries if e.extension in SOURCE_EXTENSIONS)
-    docs_count = sum(1 for e in project_entries if e.extension in {".md", ".txt", ".yaml", ".yml", ".json", ".toml"})
-    has_agent_markers = len(graph_stats.get("orientation_entrypoints", [])) >= 1 and len(graph_stats.get("structural_contracts", [])) >= 1
-    if has_agent_markers and docs_count >= max(5, code_count * 2):
-        return "AGENT_WORKSPACE"
-    if docs_count >= 5 and code_count == 0:
-        return "DOCUMENTATION_BUNDLE"
-    if code_count > 0 and docs_count > 0:
+    return {
+        "project_files": len(project_entries),
+        "code_files": sum(1 for e in project_entries if e.extension in SOURCE_EXTENSIONS),
+        "doc_files": sum(1 for e in project_entries if e.extension in DOC_EXTENSIONS or e.role in {"orientation", "architecture_or_contract", "governance_or_memory"}),
+        "data_files": sum(1 for e in project_entries if e.extension in DATA_EXTENSIONS or e.folder_family == "dataset"),
+        "runtime_files": sum(1 for e in entries if e.ownership_class in {"TOOL_RUNTIME", "VENDORED_DEPENDENCY", "GENERATED_CACHE"}),
+        "orientation_files": len(graph_stats.get("orientation_entrypoints", [])),
+        "contract_files": len(graph_stats.get("structural_contracts", [])),
+        "control_files": 1 if graph_stats.get("has_control_files") else 0,
+        "entrypoint_files": 1 if graph_stats.get("has_entrypoint") else 0,
+        "dataset_metadata_files": len(graph_stats.get("dataset_metadata", [])),
+    }
+
+def infer_project_kind(entries: list[FileEntry], graph_stats: dict[str, object]) -> str:
+    counts = kind_feature_counts(entries, graph_stats)
+    total = max(len(entries), 1)
+    project_files = max(counts["project_files"], 1)
+    runtime_ratio = counts["runtime_files"] / total
+    code_ratio = counts["code_files"] / project_files
+    doc_ratio = counts["doc_files"] / project_files
+    data_ratio = counts["data_files"] / project_files
+    agent_score = counts["orientation_files"] + counts["contract_files"]
+    code_score = counts["code_files"] + 4 * counts["control_files"] + 4 * counts["entrypoint_files"]
+    if runtime_ratio >= 0.75 and counts["project_files"] < max(20, int(total * 0.10)):
+        return "TOOL_RUNTIME"
+    if data_ratio >= 0.45 and counts["data_files"] >= max(10, counts["code_files"] * 2):
+        return "DATASET_OR_CORPUS"
+    if code_score >= 8 and agent_score >= 2:
         return "MIXED_REPO"
-    if code_count > 0:
+    if code_score >= 8 or (counts["code_files"] >= 10 and code_ratio >= 0.25):
         return "CODEBASE"
+    if agent_score >= 2 and doc_ratio >= max(0.30, code_ratio):
+        return "AGENT_WORKSPACE"
+    if counts["doc_files"] >= 5 and counts["code_files"] <= max(2, counts["doc_files"] // 5):
+        return "DOCUMENTATION_BUNDLE"
+    if counts["data_files"] >= 5 and counts["code_files"] == 0:
+        return "DATASET_OR_CORPUS"
     return "UNKNOWN"
 
-def readiness_score(entries: list[FileEntry], graph_stats: dict[str, object]) -> float:
+def readiness_subscores(entries: list[FileEntry], graph_stats: dict[str, object]) -> dict[str, object]:
+    counts = kind_feature_counts(entries, graph_stats)
     project_entries = [e for e in entries if e.ownership_class == "PROJECT_OWNED"]
     total = max(len(project_entries), 1)
-    project_kind = str(graph_stats.get("project_kind", "UNKNOWN"))
-    has_executable_entrypoint = bool(graph_stats.get("has_entrypoint"))
-    has_control_files = bool(graph_stats.get("has_control_files"))
-    has_orientation_entrypoint = bool(graph_stats.get("orientation_entrypoints"))
-    has_structural_contract = bool(graph_stats.get("structural_contracts"))
-    entry_ok = has_executable_entrypoint or (project_kind in {"AGENT_WORKSPACE", "DOCUMENTATION_BUNDLE"} and has_orientation_entrypoint)
-    control_ok = has_control_files or (project_kind in {"AGENT_WORKSPACE", "DOCUMENTATION_BUNDLE"} and has_structural_contract)
     open_now = sum(1 for e in project_entries if e.strategy == "open_now")
-    w1 = 0.30 if entry_ok else 0.0
-    w2 = 0.25 if control_ok else 0.0
-    w3 = 0.25 * min((open_now / total) * 4.0, 1.0)
-    w4 = 0.20
-    score = w1 + w2 + w3 + w4
-    if not entry_ok and not control_ok:
-        score = min(score, 0.44)
-    return round(score, 3)
+    common_w3 = 0.25 * min((open_now / total) * 4.0, 1.0)
+    common_w4 = 0.20
+    code_score = round((0.30 if graph_stats.get("has_entrypoint") else 0.0) + (0.25 if graph_stats.get("has_control_files") else 0.0) + common_w3 + common_w4, 3)
+    orientation_score = round((0.30 if graph_stats.get("orientation_entrypoints") else 0.0) + (0.25 if graph_stats.get("structural_contracts") else 0.0) + common_w3 + common_w4, 3)
+    dataset_meta = bool(graph_stats.get("dataset_metadata")) or bool(graph_stats.get("orientation_entrypoints"))
+    dataset_entry = bool(graph_stats.get("dataset_entrypoints"))
+    dataset_count_bonus = 0.25 if counts["data_files"] > 0 else 0.0
+    dataset_score = round((0.30 if (dataset_entry or dataset_meta) else 0.0) + (0.25 if dataset_meta else 0.0) + dataset_count_bonus + common_w4, 3)
+    runtime_penalty = 0.20 if counts["runtime_files"] > max(counts["project_files"] * 3, 100) else 0.0
+    return {
+        "code_readiness": max(0.0, min(1.0, code_score)),
+        "orientation_readiness": max(0.0, min(1.0, orientation_score)),
+        "dataset_readiness": max(0.0, min(1.0, dataset_score)),
+        "runtime_penalty": runtime_penalty,
+        "open_now_count": open_now,
+        "project_files": counts["project_files"],
+        "code_files": counts["code_files"],
+        "doc_files": counts["doc_files"],
+        "data_files": counts["data_files"],
+        "runtime_files": counts["runtime_files"],
+    }
+
+def readiness_score(entries: list[FileEntry], graph_stats: dict[str, object]) -> float:
+    subs = graph_stats.get("readiness_subscores") or readiness_subscores(entries, graph_stats)
+    kind = str(graph_stats.get("project_kind", "UNKNOWN"))
+    code = float(subs["code_readiness"])
+    orient = float(subs["orientation_readiness"])
+    dataset = float(subs["dataset_readiness"])
+    penalty = float(subs.get("runtime_penalty", 0.0))
+    if kind == "CODEBASE":
+        score = code if code >= 0.45 else min(code, 0.44)
+    elif kind in {"AGENT_WORKSPACE", "DOCUMENTATION_BUNDLE"}:
+        score = orient
+    elif kind == "MIXED_REPO":
+        score = (code * 0.55) + (orient * 0.45)
+    elif kind == "DATASET_OR_CORPUS":
+        score = dataset
+    elif kind == "TOOL_RUNTIME":
+        score = min(code, orient, dataset, 0.34)
+    else:
+        score = max(code, orient, dataset) - 0.10
+        if score < 0.45:
+            score = min(score, 0.44)
+    return round(max(0.0, min(1.0, score - penalty)), 3)
 
 def guardrail_mode(score: float) -> str:
     if score >= 0.65:
@@ -640,7 +732,15 @@ def build_queues(entries: list[FileEntry], phase1_max_files: int, phase1_max_byt
     phase2 = [e for e in hot if e.relative_path not in phase1_paths and is_safe_read_candidate(e)][:phase2_max_files]
     approval_required = [e for e in hot if e.strategy in {"open_now", "open_later"} and e.requires_human_approval]
     search_targets = [e for e in hot if e.strategy in {"search_only", "terminal_asset"}]
-    return {"phase1": [asdict(e) for e in phase1], "phase1_total_bytes": total, "phase2": [asdict(e) for e in phase2], "approval_required": [asdict(e) for e in approval_required], "search_targets": [asdict(e) for e in search_targets], "human_only": [asdict(e) for e in hot if e.strategy == "human_only"], "ignored": [asdict(e) for e in hot if e.strategy == "ignore"]}
+    return {
+        "phase1": [asdict(e) for e in phase1],
+        "phase1_total_bytes": total,
+        "phase2": [asdict(e) for e in phase2],
+        "approval_required": [asdict(e) for e in approval_required],
+        "search_targets": [asdict(e) for e in search_targets],
+        "human_only": [asdict(e) for e in hot if e.strategy == "human_only"],
+        "ignored": [asdict(e) for e in hot if e.strategy == "ignore"],
+    }
 
 def write_queue_markdown(path: Path, title: str, description: str, items: list[dict[str, object]]) -> None:
     lines = [f"# {title}", "", description, "", "| # | File | Owner | Role | Family | Score | In | Risk | Strategy |", "|---:|---|---|---|---|---:|---:|---:|---|"]
@@ -660,13 +760,39 @@ def family_summary(entries: list[FileEntry]) -> list[dict[str, object]]:
         strategies: dict[str, int] = defaultdict(int)
         for item in items:
             strategies[item.strategy] += 1
-        rows.append({"family": family, "files": len(items), "avg_hotpath_score": round(sum(i.hotpath_score for i in items) / len(items), 1), "dominant_strategy": sorted(strategies.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]})
+        rows.append({
+            "family": family,
+            "files": len(items),
+            "avg_hotpath_score": round(sum(i.hotpath_score for i in items) / len(items), 1),
+            "dominant_strategy": sorted(strategies.items(), key=lambda kv: (-kv[1], kv[0]))[0][0],
+        })
     return rows
+
+def ownership_summary(entries: list[FileEntry]) -> dict[str, int]:
+    out: dict[str, int] = defaultdict(int)
+    for e in entries:
+        out[e.ownership_class] += 1
+    return dict(sorted(out.items()))
 
 def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queues: dict[str, object], graph_stats: dict[str, object]) -> None:
     readiness = readiness_score(entries, graph_stats)
     mode = guardrail_mode(readiness)
-    lines = ["# ACG Structure Map", "", f"Version: `{VERSION}`", f"Source: `{source}`", f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}", f"Total indexed files: {len(entries)}", f"Project kind: {graph_stats.get('project_kind')}", f"Readiness score: {readiness} [{mode.upper()}]", "", "## Project Roots", ""]
+    subs = graph_stats.get("readiness_subscores", {})
+    lines = [
+        "# ACG Structure Map", "",
+        f"Version: `{VERSION}`",
+        f"Source: `{source}`",
+        f"Generated: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}",
+        f"Total indexed files: {len(entries)}",
+        f"Project kind: {graph_stats.get('project_kind')}",
+        f"Readiness score: {readiness} [{mode.upper()}]",
+        "", "## Readiness Subscores", "",
+        f"- code_readiness: {subs.get('code_readiness')}",
+        f"- orientation_readiness: {subs.get('orientation_readiness')}",
+        f"- dataset_readiness: {subs.get('dataset_readiness')}",
+        f"- runtime_penalty: {subs.get('runtime_penalty')}",
+        "", "## Project Roots", "",
+    ]
     for root in graph_stats.get("project_roots", []):
         lines.append(f"- `{root}`")
     lines += ["", "## Orientation Entrypoints", ""]
@@ -674,6 +800,9 @@ def write_structure_map(path: Path, source: Path, entries: list[FileEntry], queu
         lines.append(f"- `{item}`")
     lines += ["", "## Structural Contracts", ""]
     for item in graph_stats.get("structural_contracts", [])[:25]:
+        lines.append(f"- `{item}`")
+    lines += ["", "## Dataset / Corpus Signals", ""]
+    for item in graph_stats.get("dataset_entrypoints", [])[:25]:
         lines.append(f"- `{item}`")
     lines += ["", "## Ownership Summary", "", "| Ownership | Files |", "|---|---:|"]
     for k, v in ownership_summary(entries).items():
@@ -750,7 +879,19 @@ WAITING_FOR_HUMAN_APPROVAL
 def write_execution_brief(path: Path, queues: dict[str, object], entries: list[FileEntry], graph_stats: dict[str, object]) -> None:
     readiness = readiness_score(entries, graph_stats)
     mode = guardrail_mode(readiness)
-    lines = ["# ACG Execution Brief", "", f"You are operating under ACG Structure Scout v{VERSION}.", "", f"Project kind: {graph_stats.get('project_kind')}", f"Readiness: {readiness} [{mode.upper()}]", "", "Ownership-aware import graph scoring is active.", "Only PROJECT_OWNED source files are included in the main import graph.", "For AGENT_WORKSPACE and DOCUMENTATION_BUNDLE packages, orientation entrypoints and structural contracts satisfy readiness.", "", "## Required artifacts to inspect first", "", "- `../ACG_MASTER.md`", "- `execution_brief.md`", "- `next_prompt.md`", "- `phase2_plan_template.md`", "- `structure_map.md`", "- `phase1_queue.md`", "- `phase2_queue.md`", "- `approval_required.md`", "- `search_targets.md`", "- `../phase1_pack/`", "", "## You may read now"]
+    subs = graph_stats.get("readiness_subscores", {})
+    lines = [
+        "# ACG Execution Brief", "",
+        f"You are operating under ACG Structure Scout v{VERSION}.", "",
+        f"Project kind: {graph_stats.get('project_kind')}",
+        f"Readiness: {readiness} [{mode.upper()}]",
+        f"Readiness subscores: code={subs.get('code_readiness')}, orientation={subs.get('orientation_readiness')}, dataset={subs.get('dataset_readiness')}",
+        "", "Ownership-aware import graph scoring is active.",
+        "Only PROJECT_OWNED source files are included in the main import graph.",
+        "Readiness is selected by project_kind: CODEBASE, AGENT_WORKSPACE, DOCUMENTATION_BUNDLE, MIXED_REPO, DATASET_OR_CORPUS, TOOL_RUNTIME, UNKNOWN.",
+        "", "## Required artifacts to inspect first", "",
+        "- `../ACG_MASTER.md`", "- `execution_brief.md`", "- `next_prompt.md`", "- `phase2_plan_template.md`", "- `structure_map.md`", "- `phase1_queue.md`", "- `phase2_queue.md`", "- `approval_required.md`", "- `search_targets.md`", "- `../phase1_pack/`", "", "## You may read now",
+    ]
     for item in queues.get("phase1", []):
         lines.append(f"- `{item['relative_path']}`")
     lines += ["", "## Required Phase 1 Output", "", "```txt", "ACG-UNDERSTOOD: structure-scout", "SCOPE: files you actually read", "RISKS: key risks before deeper processing", "QUESTIONS: objective questions or approval requests only", "NEXT: Phase 2 plan or up to 3 clarification questions", "```"]
@@ -790,15 +931,12 @@ def write_scout_report(path: Path, source: Path, entries: list[FileEntry], queue
         "generated_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
         "root": str(source),
         "system_profile": {
-            "total_files": len(entries),
-            "language_map": dict(extensions),
-            "ownership_summary": ownership_summary(entries),
-            "project_roots": graph_stats.get("project_roots", []),
-            "project_kind": graph_stats.get("project_kind"),
-            "has_entrypoint": bool(graph_stats.get("has_entrypoint")),
-            "has_control_files": bool(graph_stats.get("has_control_files")),
-            "orientation_entrypoints": graph_stats.get("orientation_entrypoints", []),
-            "structural_contracts": graph_stats.get("structural_contracts", []),
+            "total_files": len(entries), "language_map": dict(extensions), "ownership_summary": ownership_summary(entries),
+            "project_roots": graph_stats.get("project_roots", []), "project_kind": graph_stats.get("project_kind"),
+            "readiness_subscores": graph_stats.get("readiness_subscores", {}),
+            "has_entrypoint": bool(graph_stats.get("has_entrypoint")), "has_control_files": bool(graph_stats.get("has_control_files")),
+            "orientation_entrypoints": graph_stats.get("orientation_entrypoints", []), "structural_contracts": graph_stats.get("structural_contracts", []),
+            "dataset_entrypoints": graph_stats.get("dataset_entrypoints", []), "dataset_metadata": graph_stats.get("dataset_metadata", []),
         },
         "readiness_score": readiness,
         "guardrail_mode": mode,
@@ -806,17 +944,12 @@ def write_scout_report(path: Path, source: Path, entries: list[FileEntry], queue
         "phased_reading_plan": {"phase1": queues.get("phase1", []), "phase2": queues.get("phase2", []), "phase3": queues.get("search_targets", [])[:10]},
         "broken_refs": [],
         "execution_brief": {
-            "task_id": "structure-scout",
-            "root": str(source),
-            "total_files": len(entries),
-            "readiness_score": readiness,
-            "guardrail_mode": mode,
+            "task_id": "structure-scout", "root": str(source), "total_files": len(entries), "readiness_score": readiness, "guardrail_mode": mode,
             "readiness_components": {
-                "project_kind": graph_stats.get("project_kind"),
-                "W1_executable_or_orientation_entrypoint": bool(graph_stats.get("has_entrypoint") or graph_stats.get("orientation_entrypoints")),
-                "W2_control_or_structural_contracts": bool(graph_stats.get("has_control_files") or graph_stats.get("structural_contracts")),
-                "W3_open_now_count": len(queues.get("phase1", [])),
-                "W4_broken_refs_count": 0,
+                "project_kind": graph_stats.get("project_kind"), "subscores": graph_stats.get("readiness_subscores", {}),
+                "W1_executable_or_orientation_or_dataset_entrypoint": bool(graph_stats.get("has_entrypoint") or graph_stats.get("orientation_entrypoints") or graph_stats.get("dataset_metadata")),
+                "W2_control_or_structural_or_metadata": bool(graph_stats.get("has_control_files") or graph_stats.get("structural_contracts") or graph_stats.get("dataset_metadata")),
+                "W3_open_now_count": len(queues.get("phase1", [])), "W4_broken_refs_count": 0,
             },
             "import_graph": {"total_edges": graph_stats.get("total_edges", 0), "max_in_degree": graph_stats.get("max_in_degree", 0), "hotpath_score_basis": graph_stats.get("hotpath_score_basis")},
             "instruction": "Read Phase 1 files only. Return ACG-UNDERSTOOD, SCOPE, RISKS, QUESTIONS, NEXT before any edit.",
@@ -861,10 +994,12 @@ def main() -> int:
     print(f"ACG Structure Scout indexed files: {len(entries)}")
     print(f"ACG Structure Scout version: {VERSION}")
     print(f"Project kind: {graph_stats.get('project_kind')}")
+    print(f"Readiness subscores: {graph_stats.get('readiness_subscores')}")
     print(f"Project roots: {', '.join(str(x) for x in graph_stats.get('project_roots', []))}")
     print(f"Ownership summary: {ownership_summary(entries)}")
     print(f"Orientation entrypoints: {len(graph_stats.get('orientation_entrypoints', []))}")
     print(f"Structural contracts: {len(graph_stats.get('structural_contracts', []))}")
+    print(f"Dataset entrypoints: {len(graph_stats.get('dataset_entrypoints', []))}")
     print(f"Import graph nodes: {graph_stats.get('nodes', 0)}")
     print(f"Import graph edges: {graph_stats.get('total_edges', 0)}")
     print(f"Max in-degree: {graph_stats.get('max_in_degree', 0)}")
