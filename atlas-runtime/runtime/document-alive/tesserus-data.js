@@ -1,6 +1,7 @@
 export const matrixScenes = [
   {
     code: "M02",
+    family: "Lattice",
     title: "Cortes da malha 512×512×nD",
     statement:
       "The live document opens on the stack itself: one active 512×512 plane, one tile zoom, one persistent reading frame.",
@@ -19,6 +20,7 @@ export const matrixScenes = [
   },
   {
     code: "M08",
+    family: "Runtime",
     title: "Runtime Base 4-Stack",
     statement:
       "The center turns into a layered contract stack. The scene stops talking only about geometry and starts exposing runtime order.",
@@ -37,6 +39,7 @@ export const matrixScenes = [
   },
   {
     code: "M19",
+    family: "AGM",
     title: "AGM matriz 8×8 de portais 128D",
     statement:
       "The center becomes a portal field. The detail isolates a single portal and the planes stabilize the semantic neighborhood around it.",
@@ -55,6 +58,7 @@ export const matrixScenes = [
   },
   {
     code: "M20",
+    family: "AGM",
     title: "AGM zoom do portal / SPL SN3 8×8×8",
     statement:
       "The center compresses into one portal cube. The detail tracks ring and phase while the planes keep the cube legible through the cut.",
@@ -73,6 +77,7 @@ export const matrixScenes = [
   },
   {
     code: "M23",
+    family: "Governance",
     title: "GV.REC triângulo GV",
     statement:
       "The map stops being neutral. It carries structural tension between anti-loop, recursion, and promotion pressure.",
@@ -91,6 +96,7 @@ export const matrixScenes = [
   },
   {
     code: "M35",
+    family: "LOOM",
     title: "LOOM barramento 7 eixos × 512 × n16 × ±",
     statement:
       "The scene shifts from planes to pressure lines. Seven axes pulse around the center as a bus, while detail zooms into one micro-port.",
