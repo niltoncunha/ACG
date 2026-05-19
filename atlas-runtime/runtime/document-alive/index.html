@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ATLAS.RUNTIME / Document Alive</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <canvas id="stage" aria-label="Document alive runtime canvas"></canvas>
+
+    <header class="topbar">
+      <a class="backlink" href="../../">Atlas</a>
+      <div class="titlewrap">
+        <p class="eyebrow">ATLAS.RUNTIME</p>
+        <h1>Document Alive / TESSERUS scene runner</h1>
+      </div>
+      <div class="autoplay">
+        <button id="autoplay" type="button" aria-pressed="true">Autoplay on</button>
+      </div>
+    </header>
+
+    <aside class="panel panel-left">
+      <p class="panel-label">Active matrix</p>
+      <h2 id="code">M02</h2>
+      <h3 id="title">Cortes da malha 512×512×nD</h3>
+      <p id="statement" class="statement"></p>
+      <div class="meta">
+        <p><span>Center</span><strong id="centerLabel"></strong></p>
+        <p><span>Detail</span><strong id="detailLabel"></strong></p>
+        <p><span>Map</span><strong id="mapLabel"></strong></p>
+      </div>
+      <pre id="excerpt" class="excerpt"></pre>
+    </aside>
+
+    <aside class="panel panel-right">
+      <p class="panel-label">Matrices in play</p>
+      <div id="matrixRail" class="matrix-rail"></div>
+    </aside>
+
+    <footer class="bottom-strip">
+      <div id="planes" class="planes"></div>
+      <div class="modes" role="tablist" aria-label="Scene mood">
+        <button data-mode="pulse" class="active">Pulse</button>
+        <button data-mode="drift">Drift</button>
+        <button data-mode="stack">Stack</button>
+      </div>
+    </footer>
+
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>
