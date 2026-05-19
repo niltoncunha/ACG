@@ -20,10 +20,24 @@
       </div>
     </header>
 
-    <aside class="panel panel-left">
-      <p class="panel-label">Active matrix</p>
+    <section class="scene-key">
+      <p class="panel-label">Reading key</p>
+      <div class="key-grid">
+        <div><span class="dot center"></span><strong>Center</strong><small>main state</small></div>
+        <div><span class="dot detail"></span><strong>Detail</strong><small>local proof</small></div>
+        <div><span class="dot plane"></span><strong>Planes</strong><small>fixed anchors</small></div>
+        <div><span class="dot map"></span><strong>Map</strong><small>trajectory</small></div>
+      </div>
+    </section>
+
+    <aside class="panel panel-left" data-panel="left">
+      <div class="panel-head">
+        <p class="panel-label">Active matrix</p>
+        <button class="collapse" type="button" data-collapse-target="left" aria-expanded="true">Hide</button>
+      </div>
       <h2 id="code">M02</h2>
       <h3 id="title">Cortes da malha 512×512×nD</h3>
+      <p id="family" class="family"></p>
       <p id="statement" class="statement"></p>
       <div class="meta">
         <p><span>Center</span><strong id="centerLabel"></strong></p>
@@ -33,12 +47,20 @@
       <pre id="excerpt" class="excerpt"></pre>
     </aside>
 
-    <aside class="panel panel-right">
-      <p class="panel-label">Matrices in play</p>
+    <aside class="panel panel-right" data-panel="right">
+      <div class="panel-head">
+        <p class="panel-label">Method browser</p>
+        <button class="collapse" type="button" data-collapse-target="right" aria-expanded="true">Hide</button>
+      </div>
+      <div id="familyFilters" class="family-filters"></div>
       <div id="matrixRail" class="matrix-rail"></div>
     </aside>
 
-    <footer class="bottom-strip">
+    <footer class="bottom-strip" data-panel="bottom">
+      <div class="panel-head bottom-head">
+        <p class="panel-label">Fixed planes</p>
+        <button class="collapse" type="button" data-collapse-target="bottom" aria-expanded="true">Hide</button>
+      </div>
       <div id="planes" class="planes"></div>
       <div class="modes" role="tablist" aria-label="Scene mood">
         <button data-mode="pulse" class="active">Pulse</button>
