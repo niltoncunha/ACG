@@ -1,0 +1,35 @@
+# 02.Bloqueios.base
+
+OBSIDIAN: [crossrupture.discovery.base:bloqueios-base]
+
+```yaml
+view: bloqueios
+case_root: tsd.crossrupture.discovery.base
+source: OBSIDIAN.COMPONENTES
+component_first: true
+blockers:
+  - id: B001
+    item: symbol_map_binder_lsu
+    affects:
+      - Crossrupture.Core.CMP
+      - Crossrupture.BopexLint.CMP
+    blocks: camada_simbolica_forte
+  - id: B002
+    item: corpus_de_calibracao_gptplus
+    affects:
+      - Crossrupture.Core.CMP
+      - Crossrupture.Prepass.CMP
+      - Crossrupture.MepRetention.CMP
+      - Crossrupture.HypothesisCard.CMP
+    blocks: promocao_canonica
+  - id: B003
+    item: tabela_de_problema_forte
+    affects:
+      - Crossrupture.FinalKill.CMP
+    blocks: filtro_acima_de_extremo
+  - id: B004
+    item: corpus_multimodal_minimo
+    affects:
+      - Crossrupture.Core.CMP
+    blocks: corpus_posterior
+```
