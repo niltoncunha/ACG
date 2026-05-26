@@ -1,0 +1,9 @@
+# 04.Pendencias.base
+
+OBSIDIAN: [crossrupture.discovery.base:pendencias-base]
+
+view: pendencias
+case_root: tsd.crossrupture.discovery.base
+source: OBSIDIAN.COMPONENTES
+component_first: true
+status: EM TESTE
